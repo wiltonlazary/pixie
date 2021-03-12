@@ -12,17 +12,17 @@ proc getMousePos*(): Vec2 =
   vec2(xpos, ypos)
 
 proc isMouseDown*(): bool =
-  ## Get if the left mouse button is down.
+  ## True if the left mouse button is down.
   getMouseButton(window, MOUSE_BUTTON_LEFT) == PRESS
 
 proc isKeyDown*(keyCode: int): bool =
-  ## Get if the key is currently being held down.
+  ## True if the key is currently being held down.
   ## See key codes: https://www.glfw.org/docs/3.3/group__keys.html
-  ## Examples: KEY_SPACE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
+  ## Key Code Examples: KEY_SPACE, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
   getKey(window, keyCode.cint) == PRESS
 
 proc tick*() =
-  ## Called this every frame in a while loop.
+  ## Call this every frame in a while loop.
 
   # Update texture with new pixels from surface.
   var dataPtr = screen.data[0].addr
@@ -49,7 +49,7 @@ proc tick*() =
     quit()
 
 proc start*(title = "Demo") =
-  ## Start the demo.
+  ## Call this at the start of the demo.
   if init() == 0:
     quit("Failed to Initialize GLFW.")
 
