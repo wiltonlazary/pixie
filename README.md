@@ -8,7 +8,10 @@ This library is being actively developed and we'd be happy for you to use it.
 
 `nimble install pixie`
 
+![Github Actions](https://github.com/treeform/pixie/workflows/Github%20Actions/badge.svg)
+
 Features:
+* Typesetting and rasterizing text, including styled rich text via spans.
 * Drawing paths, shapes and curves with even-odd and non-zero windings.
 * Pixel-perfect AA quality.
 * Supported file formats are PNG, BMP, JPG, SVG + more in development.
@@ -16,13 +19,13 @@ Features:
 * Shadows, glows and blurs.
 * Complex masking: Subtract, Intersect, Exclude.
 * Complex blends: Darken, Multiply, Color Dodge, Hue, Luminosity... etc.
-* Many operations are SIMD accelerated where possible.
+* Many operations are SIMD accelerated.
 
 ### Documentation
 
-API reference: https://treeform.github.io/pixie/pixie.html
+API reference: https://nimdocs.com/treeform/pixie/pixie.html
 
-### File formats
+### Image file formats
 
 Format        | Read          | Write         |
 ------------- | ------------- | ------------- |
@@ -31,6 +34,14 @@ JPEG          | ✅           |               |
 BMP           | ✅           | ✅            |
 GIF           | ✅           |               |
 SVG           | ✅           |               |
+
+### Font file formats
+
+Format        | Read
+------------- | -------------
+TTF           | ✅
+OTF           | ✅
+SVG           | ✅
 
 ### Joins and caps
 
@@ -75,15 +86,23 @@ Supported Mask Modes:
 
 Format        | Supported     | Description           |
 ------------- | ------------- | --------------------- |
-M,m           | ✅            | move to               |
-L,l           | ✅            | line to               |
-h,h           | ✅            | horizontal line to    |
-V,v           | ✅            | vertical line to      |
-C,c,S,s       | ✅            | cublic to             |
-Q,q,T,t       | ✅            | quadratic to          |
-A,a           | ✅            | arc to                |
+M m           | ✅            | move to               |
+L l           | ✅            | line to               |
+h h           | ✅            | horizontal line to    |
+V v           | ✅            | vertical line to      |
+C c S s       | ✅            | cublic to             |
+Q q T t       | ✅            | quadratic to          |
+A a           | ✅            | arc to                |
 z             | ✅            | close path            |
 
+### Realtime Examples
+
+Here are some examples of using Pixie for realtime rendering with some popular windowing libraries:
+
+* [examples/realtime_glfw.nim](examples/realtime_glfw.nim)
+* [examples/realtime_glut.nim](examples/realtime_glut.nim)
+* [examples/realtime_sdl.nim](examples/realtime_sdl.nim)
+* [examples/realtime_win32.nim](examples/realtime_win32.nim)
 
 ## Testing
 
@@ -91,38 +110,81 @@ z             | ✅            | close path            |
 
 ## Examples
 
+### Text
+[examples/text.nim](examples/text.nim)
+```nim
+var font = readFont("tests/fonts/Roboto-Regular_1.ttf")
+font.size = 20
+
+let text = "Typesetting is the arrangement and composition of text in graphic design and publishing in both digital and traditional medias."
+
+image.fillText(font.typeset(text, bounds = vec2(180, 180)), vec2(10, 10))
+```
+![example output](examples/text.png)
+
+### Text spans
+[examples/text_spans.nim](examples/text_spans.nim)
+```nim
+let font = readFont("tests/fonts/Ubuntu-Regular_1.ttf")
+
+proc style(font: Font, size: float32, color: ColorRGBA): Font =
+  result = font
+  result.size = size
+  result.paint.color = color
+
+let spans = @[
+  newSpan("verb [with object] ", font.style(12, rgba(200, 200, 200, 255))),
+  newSpan("strallow\n", font.style(36, rgba(0, 0, 0, 255))),
+  newSpan("\nstral·low\n", font.style(13, rgba(0, 127, 244, 255))),
+  newSpan("\n1. free (something) from restrictive restrictions \"the regulations are intended to strallow changes in public policy\" ",
+      font.style(14, rgba(80, 80, 80, 255)))
+]
+
+image.fillText(typeset(spans, bounds = vec2(180, 180)), vec2(10, 10))
+```
+![example output](examples/text_spans.png)
+
 ### Square
 [examples/square.nim](examples/square.nim)
 ```nim
+let ctx = newContext(image)
+ctx.fillStyle = rgba(255, 0, 0, 255)
+
 let
   pos = vec2(50, 50)
   wh = vec2(100, 100)
 
-image.fillRect(rect(pos, wh), rgba(255, 0, 0, 255))
+ctx.fillRect(rect(pos, wh))
 ```
 ![example output](examples/square.png)
 
 ### Line
 [examples/line.nim](examples/line.nim)
 ```nim
+let ctx = newContext(image)
+ctx.strokeStyle = "#FF5C00"
+ctx.lineWidth = 10
+
 let
   start = vec2(25, 25)
   stop = vec2(175, 175)
-  color = parseHtmlColor("#FF5C00").rgba
 
-image.strokeSegment(segment(start, stop), color, strokeWidth = 10)
+ctx.strokeSegment(segment(start, stop))
 ```
 ![example output](examples/line.png)
 
 ### Rounded rectangle
 [examples/rounded_rectangle.nim](examples/rounded_rectangle.nim)
 ```nim
+let ctx = newContext(image)
+ctx.fillStyle = rgba(0, 255, 0, 255)
+
 let
   pos = vec2(50, 50)
   wh = vec2(100, 100)
   r = 25.0
 
-image.fillRoundedRect(rect(pos, wh), r, rgba(0, 255, 0, 255))
+ctx.fillRoundedRect(rect(pos, wh), r)
 ```
 ![example output](examples/rounded_rectangle.png)
 
@@ -146,10 +208,12 @@ image.fillPath(
 ### Masking
 [examples/masking.nim](examples/masking.nim)
 ```nim
-lines.strokeSegment(
-  segment(vec2(25, 25), vec2(175, 175)), color, strokeWidth = 30)
-lines.strokeSegment(
-  segment(vec2(25, 175), vec2(175, 25)), color, strokeWidth = 30)
+let ctx = newContext(lines)
+ctx.strokeStyle = "#F8D1DD"
+ctx.lineWidth = 30
+
+ctx.strokeSegment(segment(vec2(25, 25), vec2(175, 175)))
+ctx.strokeSegment(segment(vec2(25, 175), vec2(175, 25)))
 
 mask.fillPath(
   """
@@ -220,11 +284,14 @@ image.fillPath(
 [examples/shadow.nim](examples/shadow.nim)
 ```nim
 let polygonImage = newImage(200, 200)
-polygonImage.fillPolygon(
+
+let ctx = newContext(polygonImage)
+ctx.fillStyle = rgba(255, 255, 255, 255)
+
+ctx.fillPolygon(
   vec2(100, 100),
   70,
-  sides = 8,
-  rgba(255, 255, 255, 255)
+  sides = 8
 )
 
 let shadow = polygonImage.shadow(

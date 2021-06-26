@@ -24,6 +24,22 @@ proc newImage*(width, height: int): Image =
   result.height = height
   result.data = newSeq[ColorRGBX](width * height)
 
+proc newImage*(mask: Mask): Image =
+  result = newImage(mask.width, mask.height)
+  var i: int
+  when defined(amd64) and not defined(pixieNoSimd):
+    for _ in countup(0, mask.data.len - 16, 4):
+      let values = mm_loadu_si128(mask.data[i].addr)
+      var alphas = unpackAlphaValues(values)
+      alphas = mm_or_si128(alphas, mm_srli_epi32(alphas, 8))
+      alphas = mm_or_si128(alphas, mm_srli_epi32(alphas, 16))
+      mm_storeu_si128(result.data[i].addr, alphas)
+      i += 4
+
+  for i in i ..< mask.data.len:
+    let v = mask.data[i]
+    result.data[i] = rgbx(v, v, v, v)
+
 proc wh*(image: Image): Vec2 {.inline.} =
   ## Return with and height as a size vector.
   vec2(image.width.float32, image.height.float32)
@@ -209,10 +225,55 @@ proc minifyBy2*(image: Image, power = 1): Image =
     return image.copy()
 
   var src = image
-  for i in 1 .. power:
+  for _ in 1 .. power:
     result = newImage(src.width div 2, src.height div 2)
     for y in 0 ..< result.height:
-      for x in 0 ..< result.width:
+      var x: int
+      when defined(amd64) and not defined(pixieNoSimd):
+        let
+          oddMask = mm_set1_epi16(cast[int16](0xff00))
+          first32 = cast[M128i]([uint32.high, 0, 0, 0])
+        for _ in countup(0, result.width - 4, 2):
+          let
+            top = mm_loadu_si128(src.data[src.dataIndex(x * 2, y * 2 + 0)].addr)
+            btm = mm_loadu_si128(src.data[src.dataIndex(x * 2, y * 2 + 1)].addr)
+            topShifted = mm_srli_si128(top, 4)
+            btmShifted = mm_srli_si128(btm, 4)
+
+            topEven = mm_andnot_si128(oddMask, top)
+            topOdd = mm_srli_epi16(mm_and_si128(top, oddMask), 8)
+            btmEven = mm_andnot_si128(oddMask, btm)
+            btmOdd = mm_srli_epi16(mm_and_si128(btm, oddMask), 8)
+
+            topShiftedEven = mm_andnot_si128(oddMask, topShifted)
+            topShiftedOdd = mm_srli_epi16(mm_and_si128(topShifted, oddMask), 8)
+            btmShiftedEven = mm_andnot_si128(oddMask, btmShifted)
+            btmShiftedOdd = mm_srli_epi16(mm_and_si128(btmShifted, oddMask), 8)
+
+            topAddedEven = mm_add_epi16(topEven, topShiftedEven)
+            btmAddedEven = mm_add_epi16(btmEven, btmShiftedEven)
+            topAddedOdd = mm_add_epi16(topOdd, topShiftedOdd)
+            bottomAddedOdd = mm_add_epi16(btmOdd, btmShiftedOdd)
+
+            addedEven = mm_add_epi16(topAddedEven, btmAddedEven)
+            addedOdd = mm_add_epi16(topAddedOdd, bottomAddedOdd)
+
+            addedEvenDiv4 = mm_srli_epi16(addedEven, 2)
+            addedOddDiv4 = mm_srli_epi16(addedOdd, 2)
+
+            merged = mm_or_si128(addedEvenDiv4, mm_slli_epi16(addedOddDiv4, 8))
+
+            # merged [0, 1, 2, 3] has the correct values for the next two pixels
+            # at index 0 and 2 so shift those into position and store
+
+            zero = mm_and_si128(merged, first32)
+            two = mm_and_si128(mm_srli_si128(merged, 8), first32)
+            zeroTwo = mm_or_si128(zero, mm_slli_si128(two, 4))
+
+          mm_storeu_si128(result.data[result.dataIndex(x, y)].addr, zeroTwo)
+          x += 2
+
+      for x in x ..< result.width:
         let
           a = src.getRgbaUnsafe(x * 2 + 0, y * 2 + 0)
           b = src.getRgbaUnsafe(x * 2 + 1, y * 2 + 0)
@@ -239,9 +300,13 @@ proc magnifyBy2*(image: Image, power = 1): Image =
   let scale = 2 ^ power
   result = newImage(image.width * scale, image.height * scale)
   for y in 0 ..< result.height:
-    for x in 0 ..< result.width:
-      var rgba = image.getRgbaUnsafe(x div scale, y div scale)
-      result.setRgbaUnsafe(x, y, rgba)
+    for x in 0 ..< image.width:
+      let
+        rgba = image.getRgbaUnsafe(x, y div scale)
+        scaledX = x * scale
+        idx = result.dataIndex(scaledX, y)
+      for i in 0 ..< scale:
+        result.data[idx + i] = rgba
 
 proc applyOpacity*(target: Image | Mask, opacity: float32) =
   ## Multiplies alpha of the image by opacity.
@@ -356,6 +421,8 @@ proc blur*(
   let radius = round(radius).int
   if radius == 0:
     return
+  if radius < 0:
+    raise newException(PixieError, "Cannot apply negative blur")
 
   let
     kernel = gaussianKernel(radius)
@@ -397,7 +464,7 @@ proc blur*(
       for xx in max(x - radius, image.width) .. x + radius:
         values += outOfBounds * kernel[xx - x + radius]
 
-      blurX.setRgbaUnsafe(y, x, values.rgbx())
+      blurX.setRgbaUnsafe(y, x, rgbx(values))
 
   # Blur in the Y direction.
   for y in 0 ..< image.height:
@@ -412,7 +479,7 @@ proc blur*(
       for yy in max(y - radius, image.height) .. y + radius:
         values += outOfBounds * kernel[yy - y + radius]
 
-      image.setRgbaUnsafe(x, y, values.rgbx())
+      image.setRgbaUnsafe(x, y, rgbx(values))
 
 proc newMask*(image: Image): Mask =
   ## Returns a new mask using the alpha values of the parameter image.
@@ -500,7 +567,7 @@ proc drawCorrect(
       dy = matInv * vec2(0 + h, 1 + h) - p
       minFilterBy2 = max(dx.length, dy.length)
 
-    while minFilterBy2 > 2:
+    while minFilterBy2 >= 2:
       b = b.minifyBy2()
       dx /= 2
       dy /= 2
@@ -557,7 +624,7 @@ proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
     minFilterBy2 = max(dx.length, dy.length)
     b = b
 
-  while minFilterBy2 > 2.0:
+  while minFilterBy2 >= 2.0:
     b = b.minifyBy2()
     p /= 2
     dx /= 2
@@ -579,7 +646,7 @@ proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
 
   # Determine where we should start and stop drawing in the y dimension
   var yMin, yMax: int
-  if blendMode == bmIntersectMask:
+  if blendMode == bmMask:
     yMin = 0
     yMax = a.height
   else:
@@ -611,7 +678,7 @@ proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
     xMin = xMin.clamp(0, a.width)
     xMax = xMax.clamp(0, a.width)
 
-    if blendMode == bmIntersectMask:
+    if blendMode == bmMask:
       if xMin > 0:
         zeroMem(a.data[a.dataIndex(0, y)].addr, 4 * xMin)
 
@@ -702,77 +769,78 @@ proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
                 )
                 x += 16
 
-      for _ in x ..< xMax:
-        let
-          srcPos = p + dx * x.float32 + dy * y.float32
-          xFloat = srcPos.x - h
-          yFloat = srcPos.y - h
+      var srcPos = p + dx * x.float32 + dy * y.float32
+      srcPos = vec2(max(0, srcPos.x), max(0, srcPos.y))
+
+      for x in x ..< xMax:
+        let samplePos = ivec2((srcPos.x - h).int32, (srcPos.y - h).int32)
 
         when type(a) is Image:
           let backdrop = a.getRgbaUnsafe(x, y)
           when type(b) is Image:
             let
-              sample = b.getRgbaUnsafe(xFloat.int, yFloat.int)
+              sample = b.getRgbaUnsafe(samplePos.x, samplePos.y)
               blended = blender(backdrop, sample)
           else: # b is a Mask
             let
-              sample = b.getValueUnsafe(xFloat.int, yFloat.int)
+              sample = b.getValueUnsafe(samplePos.x, samplePos.y)
               blended = blender(backdrop, rgbx(0, 0, 0, sample))
           a.setRgbaUnsafe(x, y, blended)
         else: # a is a Mask
           let backdrop = a.getValueUnsafe(x, y)
           when type(b) is Image:
-            let sample = b.getRgbaUnsafe(xFloat.int, yFloat.int).a
+            let sample = b.getRgbaUnsafe(samplePos.x, samplePos.y).a
           else: # b is a Mask
-            let sample = b.getValueUnsafe(xFloat.int, yFloat.int)
+            let sample = b.getValueUnsafe(samplePos.x, samplePos.y)
           a.setValueUnsafe(x, y, masker(backdrop, sample))
-        inc x
 
-    if blendMode == bmIntersectMask:
+        srcPos += dx
+
+    if blendMode == bmMask:
       if a.width - xMax > 0:
         zeroMem(a.data[a.dataIndex(xMax, y)].addr, 4 * (a.width - xMax))
 
-proc draw*(a, b: Image, mat: Mat3, blendMode = bmNormal) {.inline.} =
+proc draw*(
+  a, b: Image, transform: Vec2 | Mat3 = vec2(), blendMode = bmNormal
+) {.inline.} =
   ## Draws one image onto another using matrix with color blending.
-  a.drawUber(b, mat, blendMode)
-
-proc draw*(a, b: Image, pos = vec2(0, 0), blendMode = bmNormal) {.inline.} =
-  ## Draws one image onto another using a position offset with color blending.
-  a.draw(b, translate(pos), blendMode)
-
-proc draw*(image: Image, mask: Mask, mat: Mat3, blendMode = bmMask) {.inline.} =
-  ## Draws a mask onto an image using a matrix with color blending.
-  image.drawUber(mask, mat, blendMode)
+  when type(transform) is Vec2:
+    a.drawUber(b, translate(transform), blendMode)
+  else:
+    a.drawUber(b, transform, blendMode)
 
 proc draw*(
-  image: Image, mask: Mask, pos = vec2(0, 0), blendMode = bmMask
+  a, b: Mask, transform: Vec2 | Mat3 = vec2(), blendMode = bmMask
 ) {.inline.} =
-  ## Draws a mask onto an image using a position offset with color blending.
-  image.drawUber(mask, translate(pos), blendMode)
-
-proc draw*(a, b: Mask, mat: Mat3, blendMode = bmMask) {.inline.} =
   ## Draws a mask onto a mask using a matrix with color blending.
-  a.drawUber(b, mat, blendMode)
-
-proc draw*(a, b: Mask, pos = vec2(0, 0), blendMode = bmMask) {.inline.} =
-  ## Draws a mask onto a mask using a position offset with color blending.
-  a.draw(b, translate(pos), blendMode)
-
-proc draw*(mask: Mask, image: Image, mat: Mat3, blendMode = bmMask) {.inline.} =
-  ## Draws a image onto a mask using a matrix with color blending.
-  mask.drawUber(image, mat, blendMode)
+  when type(transform) is Vec2:
+    a.drawUber(b, translate(transform), blendMode)
+  else:
+    a.drawUber(b, transform, blendMode)
 
 proc draw*(
-  mask: Mask, image: Image, pos = vec2(0, 0), blendMode = bmMask
+  image: Image, mask: Mask, transform: Vec2 | Mat3 = vec2(), blendMode = bmMask
 ) {.inline.} =
-  ## Draws a image onto a mask using a position offset with color blending.
-  mask.draw(image, translate(pos), blendMode)
+  ## Draws a mask onto an image using a matrix with color blending.
+  when type(transform) is Vec2:
+    image.drawUber(mask, translate(transform), blendMode)
+  else:
+    image.drawUber(mask, transform, blendMode)
+
+proc draw*(
+  mask: Mask, image: Image, transform: Vec2 | Mat3 = vec2(), blendMode = bmMask
+) {.inline.} =
+  ## Draws a image onto a mask using a matrix with color blending.
+  when type(transform) is Vec2:
+    mask.drawUber(image, translate(transform), blendMode)
+  else:
+    mask.drawUber(image, transform, blendMode)
 
 proc drawTiled*(dest, src: Image, mat: Mat3, blendMode = bmNormal) =
   dest.drawCorrect(src, mat, true, blendMode)
 
 proc resize*(srcImage: Image, width, height: int): Image =
-  ## Resize an image to a given hight and width.
+  ## Resize an image to a given height and width.
   if width == srcImage.width and height == srcImage.height:
     result = srcImage.copy()
   else:
@@ -804,12 +872,9 @@ proc shadow*(
 ): Image =
   ## Create a shadow of the image with the offset, spread and blur.
   let mask = image.newMask()
-  if offset != vec2(0, 0):
-    mask.shift(offset)
-  if spread > 0:
-    mask.spread(spread)
-  if blur > 0:
-    mask.blur(blur)
+  mask.shift(offset)
+  mask.spread(spread)
+  mask.blur(blur)
   result = newImage(mask.width, mask.height)
   result.fill(color)
   result.draw(mask, blendMode = bmMask)

@@ -1,11 +1,18 @@
-import chroma, pixie, pixie/fileformats/png
+import chroma, pixie, pixie/fileformats/png, strformat
 
 block:
   let pathStr = """
   m 1 2 3 4 5 6
   """
   let path = parsePath(pathStr)
-  doAssert $path == "m1 2 m3 4 m5 6"
+  doAssert $path == "m1 2 l3 4 l5 6"
+
+block:
+  let pathStr = """
+  l 1 2 3 4 5 6
+  """
+  let path = parsePath(pathStr)
+  doAssert $path == "l1 2 l3 4 l5 6"
 
 block:
   let pathStr = """
@@ -47,7 +54,7 @@ block:
     image = newImage(100, 100)
     pathStr = "M 10 10 L 90 90"
     color = rgba(255, 0, 0, 255)
-  image.strokePath(pathStr, color, 10)
+  image.strokePath(pathStr, color, strokeWidth = 10)
   image.writeFile("tests/images/paths/pathStroke1.png")
 
 block:
@@ -55,7 +62,7 @@ block:
     image = newImage(100, 100)
     pathStr = "M 10 10 L 50 60 90 90"
     color = rgba(255, 0, 0, 255)
-  image.strokePath(pathStr, color, 10)
+  image.strokePath(pathStr, color, strokeWidth = 10)
   image.writeFile("tests/images/paths/pathStroke2.png")
 
 block:
@@ -149,22 +156,22 @@ block:
   )
   image.writeFile("tests/images/paths/pathCornerArc.png")
 
-block:
-  let
-    image = newImage(100, 100)
-    r = 10.0
-    x = 10.0
-    y = 10.0
-    h = 80.0
-    w = 80.0
-  var path: Path
-  path.moveTo(x + r, y)
-  path.arcTo(x + w, y, x + w, y + h, r)
-  path.arcTo(x + w, y + h, x, y + h, r)
-  path.arcTo(x, y + h, x, y, r)
-  path.arcTo(x, y, x + w, y, r)
-  image.fillPath(path, rgba(255, 0, 0, 255))
-  image.writeFile("tests/images/paths/pathRoundRect.png")
+# block:
+#   let
+#     image = newImage(100, 100)
+#     r = 10.0
+#     x = 10.0
+#     y = 10.0
+#     h = 80.0
+#     w = 80.0
+#   var path: Path
+#   path.moveTo(x + r, y)
+#   path.arcTo(x + w, y, x + w, y + h, r)
+#   path.arcTo(x + w, y + h, x, y + h, r)
+#   path.arcTo(x, y + h, x, y, r)
+#   path.arcTo(x, y, x + w, y, r)
+#   image.fillPath(path, rgba(255, 0, 0, 255))
+#   image.writeFile("tests/images/paths/pathRoundRect.png")
 
 block:
   let
@@ -173,22 +180,22 @@ block:
   mask.fillPath(pathStr)
   writeFile("tests/images/paths/pathRectangleMask.png", mask.encodePng())
 
-block:
-  let
-    mask = newMask(100, 100)
-    r = 10.0
-    x = 10.0
-    y = 10.0
-    h = 80.0
-    w = 80.0
-  var path: Path
-  path.moveTo(x + r, y)
-  path.arcTo(x + w, y, x + w, y + h, r)
-  path.arcTo(x + w, y + h, x, y + h, r)
-  path.arcTo(x, y + h, x, y, r)
-  path.arcTo(x, y, x + w, y, r)
-  mask.fillPath(path)
-  writeFile("tests/images/paths/pathRoundRectMask.png", mask.encodePng())
+# block:
+#   let
+#     mask = newMask(100, 100)
+#     r = 10.0
+#     x = 10.0
+#     y = 10.0
+#     h = 80.0
+#     w = 80.0
+#   var path: Path
+#   path.moveTo(x + r, y)
+#   path.arcTo(x + w, y, x + w, y + h, r)
+#   path.arcTo(x + w, y + h, x, y + h, r)
+#   path.arcTo(x, y + h, x, y, r)
+#   path.arcTo(x, y, x + w, y, r)
+#   mask.fillPath(path)
+#   writeFile("tests/images/paths/pathRoundRectMask.png", mask.encodePng())
 
 block:
   let image = newImage(200, 200)
@@ -256,6 +263,77 @@ block:
 
   image.writeFile("tests/images/paths/lcSquare.png")
 
+block:
+  let
+    image = newImage(60, 120)
+    path = parsePath("M 0 0 L 50 0")
+  image.fill(rgba(255, 255, 255, 255))
+
+  image.strokePath(
+    path, rgba(0, 0, 0, 255), vec2(5, 5), 10, lcButt, ljBevel,
+  )
+
+  image.strokePath(
+    path, rgba(0, 0, 0, 255), vec2(5, 25), 10, lcButt, ljBevel,
+    dashes = @[2.float32, 2]
+  )
+
+  image.strokePath(
+    path, rgba(0, 0, 0, 255), vec2(5, 45), 10, lcButt, ljBevel,
+    dashes = @[4.float32, 4]
+  )
+
+  image.strokePath(
+    path, rgba(0, 0, 0, 255), vec2(5, 65), 10, lcButt, ljBevel,
+    dashes = @[2.float32, 4, 6, 2]
+  )
+
+  image.strokePath(
+    path, rgba(0, 0, 0, 255), vec2(5, 85), 10, lcButt, ljBevel,
+    dashes = @[1.float32]
+  )
+
+  image.strokePath(
+    path, rgba(0, 0, 0, 255), vec2(5, 105), 10, lcButt, ljBevel,
+    dashes = @[1.float32, 2, 3, 4, 5, 6, 7, 8, 9]
+  )
+
+  image.writeFile("tests/images/paths/dashes.png")
+
+block:
+  proc miterTest(angle, limit: float32) =
+    let
+      image = newImage(60, 60)
+    image.fill(rgba(255, 255, 255, 255))
+    var path: Path
+    path.moveTo(-20, 0)
+    path.lineTo(0, 0)
+    let th = angle.float32.degToRad() + PI/2
+    path.lineTo(sin(th)*20, cos(th)*20)
+
+    image.strokePath(
+      path, rgba(0, 0, 0, 255), vec2(30, 30), 8, lcButt, ljMiter,
+      miterLimit = limit
+    )
+    image.writeFile(&"tests/images/paths/miterLimit_{angle.int}deg_{limit:0.2f}num.png")
+
+  miterTest(10, 2)
+  miterTest(145, 2)
+  miterTest(155, 2)
+  miterTest(165, 2)
+  miterTest(165, 10)
+  miterTest(145, 3.32)
+  miterTest(145, 3.33)
+
+block:
+  # Test self closing subpaths on fill
+  let
+    image = newImage(60, 60)
+    path = parsePath("M0 0 L0 0 L60 0 L60 60 L0 60")
+  image.fill(rgba(255, 255, 255, 255))
+  image.fillPath(path, rgba(127, 127, 127, 255))
+  image.writeFile("tests/images/paths/selfclosing.png")
+
 # Potential error cases, ensure they do not crash
 
 block:
@@ -285,3 +363,75 @@ block:
     path = parsePath("L 0 0")
   image.fill(rgba(255, 255, 255, 255))
   image.strokePath(path, rgba(0, 0, 0, 255), vec2(10, 10), 10, lcSquare, ljMiter)
+
+block:
+  let image = newImage(100, 100)
+  image.fillPath(
+    "M 10 10 H 60 V 60 H 10 z",
+    Paint(kind: pkSolid, color: rgbx(255, 0, 0, 255), blendMode: bmNormal)
+  )
+  image.fillPath(
+    "M 30 30 H 80 V 80 H 30 z",
+    Paint(kind: pkSolid, color: rgbx(0, 255, 0, 255), blendMode: bmExcludeMask)
+  )
+  image.writeFile("tests/images/paths/rectExcludeMask.png")
+
+block:
+  let image = newImage(100, 100)
+  image.fillPath(
+    "M 10.1 10.1 H 60.1 V 60.1 H 10.1 z",
+    Paint(kind: pkSolid, color: rgbx(255, 0, 0, 255), blendMode: bmNormal)
+  )
+  image.fillPath(
+    "M 30.1 30.1 H 80.1 V 80.1 H 30.1 z",
+    Paint(kind: pkSolid, color: rgbx(0, 255, 0, 255), blendMode: bmExcludeMask)
+  )
+  image.writeFile("tests/images/paths/rectExcludeMaskAA.png")
+
+block:
+  let image = newImage(100, 100)
+  image.fillPath(
+    "M 10 10 H 60 V 60 H 10 z",
+    Paint(kind: pkSolid, color: rgbx(255, 0, 0, 255), blendMode: bmNormal)
+  )
+  image.fillPath(
+    "M 30 30 H 80 V 80 H 30 z",
+    Paint(kind: pkSolid, color: rgbx(0, 255, 0, 255), blendMode: bmMask)
+  )
+  image.writeFile("tests/images/paths/rectMask.png")
+
+block:
+  let image = newImage(100, 100)
+  image.fillPath(
+    "M 10.1 10.1 H 60.1 V 60.1 H 10.1 z",
+    Paint(kind: pkSolid, color: rgbx(255, 0, 0, 255), blendMode: bmNormal)
+  )
+  image.fillPath(
+    "M 30.1 30.1 H 80.1 V 80.1 H 30.1 z",
+    Paint(kind: pkSolid, color: rgbx(0, 255, 0, 255), blendMode: bmMask)
+  )
+  image.writeFile("tests/images/paths/rectMaskAA.png")
+
+block:
+  let mask = newMask(100, 100)
+  mask.fillPath("M 10 10 H 60 V 60 H 10 z")
+  mask.fillPath("M 30 30 H 80 V 80 H 30 z", blendMode = bmExcludeMask)
+  writeFile("tests/images/paths/maskRectExcludeMask.png", mask.encodePng())
+
+block:
+  let mask = newMask(100, 100)
+  mask.fillPath("M 10.1 10.1 H 60.1 V 60.1 H 10.1 z")
+  mask.fillPath("M 30.1 30.1 H 80.1 V 80.1 H 30.1 z", blendMode = bmExcludeMask)
+  writeFile("tests/images/paths/maskRectExcludeMaskAA.png", mask.encodePng())
+
+block:
+  let mask = newMask(100, 100)
+  mask.fillPath("M 10 10 H 60 V 60 H 10 z")
+  mask.fillPath("M 30 30 H 80 V 80 H 30 z", blendMode = bmMask)
+  writeFile("tests/images/paths/maskRectMask.png", mask.encodePng())
+
+block:
+  let mask = newMask(100, 100)
+  mask.fillPath("M 10.1 10.1 H 60.1 V 60.1 H 10.1 z")
+  mask.fillPath("M 30.1 30.1 H 80.1 V 80.1 H 30.1 z", blendMode = bmMask)
+  writeFile("tests/images/paths/maskRectMaskAA.png", mask.encodePng())

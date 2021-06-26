@@ -95,9 +95,27 @@ block:
 
 block:
   let
+    a = readImage("tests/images/minifiedBy2.png")
+    b = a.magnifyBy2()
+  b.writeFile("tests/images/magnifiedBy2.png")
+
+block:
+  let
     a = readImage("tests/images/flipped1.png")
     b = a.minifyBy2(2)
   b.writeFile("tests/images/minifiedBy4.png")
+
+block:
+  let
+    a = readImage("tests/images/minifiedBy4.png")
+    b = a.magnifyBy2(2)
+  b.writeFile("tests/images/magnifiedBy4.png")
+
+block:
+  let
+    a = readImage("tests/images/png/baboon.png")
+    b = a.minifyBy2()
+  b.writeFile("tests/images/minifiedBaboon.png")
 
 block:
   let a = newImage(100, 100)
@@ -106,15 +124,43 @@ block:
   doAssert a[0, 0] == rgbx(44, 33, 22, 55)
 
 block:
-  let image = newImage(100, 100)
-  image.fill(rgba(0, 0, 0, 255))
-  image.fillRect(rect(25, 25, 50, 50), rgba(255, 255, 255, 255))
-  image.blur(20)
-  image.writeFile("tests/images/imageblur20.png")
+  let ctx = newContext(100, 100)
+  ctx.fillStyle = rgba(255, 255, 255, 255)
+  ctx.image.fill(rgba(0, 0, 0, 255))
+  ctx.fillRect(rect(25, 25, 50, 50), )
+  ctx.image.blur(20)
+  ctx.image.writeFile("tests/images/imageblur20.png")
 
 block:
+  let ctx = newContext(100, 100)
+  ctx.fillStyle = rgba(255, 255, 255, 255)
+  ctx.image.fill(rgba(0, 0, 0, 255))
+  ctx.fillRect(rect(25, 25, 50, 50))
+  ctx.image.blur(20, rgba(0, 0, 0, 255))
+  ctx.image.writeFile("tests/images/imageblur20oob.png")
+
+block: # Test conversion between image and mask
+  let
+    originalImage = newImage(100, 100)
+    originalMask = newMask(100, 100)
+
+  var p: Path
+  p.rect(10, 10, 80, 80)
+
+  originalImage.fillPath(p, rgba(255, 0, 0, 255))
+  originalMask.fillPath(p)
+
+  # Converting an image to a mask == a mask of the same fill
+  doAssert newMask(originalImage).data == originalMask.data
+
+  # Converting a mask to an image == converting an image to a mask as an image
+  doAssert newImage(newMask(originalImage)).data == newImage(originalMask).data
+
+block:
+  var p: Path
+  p.roundedRect(10, 10, 80, 80, 10, 10, 10, 10)
+
   let image = newImage(100, 100)
-  image.fill(rgba(0, 0, 0, 255))
-  image.fillRect(rect(25, 25, 50, 50), rgba(255, 255, 255, 255))
-  image.blur(20, rgba(0, 0, 0, 255))
-  image.writeFile("tests/images/imageblur20oob.png")
+  image.fillPath(p, rgba(255, 0, 0, 255))
+
+  newImage(newMask(image)).writeFile("tests/images/mask2image.png")

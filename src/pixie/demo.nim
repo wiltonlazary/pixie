@@ -1,17 +1,22 @@
-import staticglfw except Image
-import opengl, pixie
+import opengl, pixie, pixie/context
+
 export pixie
+
+import staticglfw except Image
+
 export staticglfw except Image
 
 var
-  screen* = newImage(800, 600)
+  dpi: float32 = 1.0
+  screen*: Image
+  ctx*: Context
   window*: Window
 
 proc getMousePos*(): Vec2 =
   ## Get the mouse position.
   var xpos, ypos: float64
   getCursorPos(window, xpos.addr, ypos.addr)
-  vec2(xpos, ypos)
+  vec2(xpos, ypos) / dpi
 
 proc isMouseDown*(): bool =
   ## Get if the left mouse button is down.
@@ -50,17 +55,27 @@ proc tick*() =
   if windowShouldClose(window) == 1:
     quit()
 
-proc start*(title = "Demo") =
+  ctx.setTransform(scale(vec2(dpi, dpi)))
+
+proc start*(title = "Demo", width = 800, height = 600) =
   ## Start the demo.
   if init() == 0:
     quit("Failed to Initialize GLFW.")
 
   windowHint(RESIZABLE, false.cint)
-  window = createWindow(screen.width.cint, screen.height.cint, title, nil, nil)
+  window = createWindow(width.cint, height.cint, title, nil, nil)
   if window == nil:
     quit("Failed to create window.")
   makeContextCurrent(window)
   loadExtensions()
+
+  var xscale, yscale: cfloat
+  window.getWindowContentScale(xscale.addr, yscale.addr)
+  dpi = xscale
+  screen = newImage(int(width.float32 * dpi), int(height.float32 * dpi))
+  window.setWindowSize(screen.width.cint, screen.height.cint)
+  glViewport(0, 0, screen.width.cint, screen.height.cint)
+  ctx = newContext(screen)
 
   # Allocate a texture and bind it.
   var dataPtr = screen.data[0].addr

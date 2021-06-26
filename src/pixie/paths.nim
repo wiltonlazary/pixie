@@ -25,28 +25,42 @@ type
     RMove, RLine, RHLine, RVLine, RCubic, RSCubic, RQuad, RTQuad, RArc
 
   PathCommand* = object
-    ## Binary version of an SVG command
+    ## Binary version of an SVG command.
     kind*: PathCommandKind
     numbers*: seq[float32]
 
   Path* = object
     ## Used to hold paths and create paths.
-    commands*: seq[PathCommand]
+    commands: seq[PathCommand]
     start, at: Vec2 # Maintained by moveTo, lineTo, etc. Used by arcTo.
 
-  SomePath* = Path | string | seq[seq[Vec2]]
+  SomePath* = Path | string
 
-const epsilon = 0.0001 * PI ## Tiny value used for some computations.
+  Partitioning = object
+    partitions: seq[seq[(Segment, int16)]]
+    startY, partitionHeight: uint32
+
+const
+  epsilon = 0.0001 * PI ## Tiny value used for some computations.
+  defaultMiterLimit*: float32 = 4
 
 when defined(release):
   {.push checks: off.}
 
-proc maxScale(m: Mat3): float32 =
-  ## What is the largest scale factor of this matrix?
-  max(
-    vec2(m[0, 0], m[0, 1]).length,
-    vec2(m[1, 0], m[1, 1]).length
-  )
+proc pixelScale(transform: Vec2 | Mat3): float32 =
+  ## What is the largest scale factor of this transform?
+  when type(transform) is Vec2:
+    return 1.0
+  else:
+    max(
+      vec2(transform[0, 0], transform[0, 1]).length,
+      vec2(transform[1, 0], transform[1, 1]).length
+    )
+
+proc isRelative(kind: PathCommandKind): bool =
+  kind in {
+    RMove, RLine, TQuad, RTQuad, RHLine, RVLine, RCubic, RSCubic, RQuad, RArc
+  }
 
 proc parameterCount(kind: PathCommandKind): int =
   ## Returns number of parameters a path command has.
@@ -126,6 +140,11 @@ proc parsePath*(path: string): Path =
             "Invalid path, wrong number of parameters"
           )
         for batch in 0 ..< numbers.len div paramCount:
+          if batch > 0:
+            if kind == Move:
+              kind = Line
+            elif kind == RMove:
+              kind = RLine
           result.commands.add(PathCommand(
             kind: kind,
             numbers: numbers[batch * paramCount ..< (batch + 1) * paramCount]
@@ -231,7 +250,17 @@ proc parsePath*(path: string): Path =
 
 proc transform*(path: var Path, mat: Mat3) =
   ## Apply a matrix transform to a path.
+  if mat == mat3():
+    return
+
+  if path.commands.len > 0 and path.commands[0].kind == RMove:
+    path.commands[0].kind = Move
+
   for command in path.commands.mitems:
+    var mat = mat
+    if command.kind.isRelative():
+      mat.pos = vec2(0)
+
     case command.kind:
     of Close:
       discard
@@ -289,34 +318,38 @@ proc addPath*(path: var Path, other: Path) =
   path.commands.add(other.commands)
 
 proc closePath*(path: var Path) =
-  ## Closes a path (draws a line to the start).
+  ## Attempts to add a straight line from the current point to the start of
+  ## the current sub-path. If the shape has already been closed or has only
+  ## one point, this function does nothing.
   path.commands.add(PathCommand(kind: Close))
   path.at = path.start
 
 proc moveTo*(path: var Path, x, y: float32) =
-  ## Moves the current drawing pen to a new position and starts a new shape.
+  ## Begins a new sub-path at the point (x, y).
   path.commands.add(PathCommand(kind: Move, numbers: @[x, y]))
   path.start = vec2(x, y)
   path.at = path.start
 
 proc moveTo*(path: var Path, v: Vec2) {.inline.} =
-  ## Moves the current drawing pen to a new position and starts a new shape.
+  ## Begins a new sub-path at the point (x, y).
   path.moveTo(v.x, v.y)
 
 proc lineTo*(path: var Path, x, y: float32) =
-  ## Adds a line.
+  ## Adds a straight line to the current sub-path by connecting the sub-path's
+  ## last point to the specified (x, y) coordinates.
   path.commands.add(PathCommand(kind: Line, numbers: @[x, y]))
   path.at = vec2(x, y)
 
 proc lineTo*(path: var Path, v: Vec2) {.inline.} =
-  ## Adds a line.
+  ## Adds a straight line to the current sub-path by connecting the sub-path's
+  ## last point to the specified (x, y) coordinates.
   path.lineTo(v.x, v.y)
 
 proc bezierCurveTo*(path: var Path, x1, y1, x2, y2, x3, y3: float32) =
-  ## Adds a cubic Bézier curve to the path. This requires three points.
-  ## The first two points are control points and the third is the end point.
-  ## The starting point is the last point in the current path, which can be
-  ## changed using moveTo() before creating the curve.
+  ## Adds a cubic Bézier curve to the current sub-path. It requires three
+  ## points: the first two are control points and the third one is the end
+  ## point. The starting point is the latest point in the current path,
+  ## which can be changed using moveTo() before creating the Bézier curve.
   path.commands.add(PathCommand(
     kind: Cubic,
     numbers: @[x1, y1, x2, y2, x3, y3]
@@ -324,13 +357,18 @@ proc bezierCurveTo*(path: var Path, x1, y1, x2, y2, x3, y3: float32) =
   path.at = vec2(x3, y3)
 
 proc bezierCurveTo*(path: var Path, ctrl1, ctrl2, to: Vec2) {.inline.} =
+  ## Adds a cubic Bézier curve to the current sub-path. It requires three
+  ## points: the first two are control points and the third one is the end
+  ## point. The starting point is the latest point in the current path,
+  ## which can be changed using moveTo() before creating the Bézier curve.
   path.bezierCurveTo(ctrl1.x, ctrl1.y, ctrl2.x, ctrl2.y, to.x, to.y)
 
 proc quadraticCurveTo*(path: var Path, x1, y1, x2, y2: float32) =
-  ## Adds a quadratic Bézier curve to the path. This requires 2 points.
-  ## The first point is the control point and the second is the end point.
-  ## The starting point is the last point in the current path, which can be
-  ## changed using moveTo() before creating the curve.
+  ## Adds a quadratic Bézier curve to the current sub-path. It requires two
+  ## points: the first one is a control point and the second one is the end
+  ## point. The starting point is the latest point in the current path,
+  ## which can be changed using moveTo() before creating the quadratic
+  ## Bézier curve.
   path.commands.add(PathCommand(
     kind: Quad,
     numbers: @[x1, y1, x2, y2]
@@ -338,71 +376,73 @@ proc quadraticCurveTo*(path: var Path, x1, y1, x2, y2: float32) =
   path.at = vec2(x2, y2)
 
 proc quadraticCurveTo*(path: var Path, ctrl, to: Vec2) {.inline.} =
-  ## Adds a quadratic Bézier curve to the path. This requires 2 points.
-  ## The first point is the control point and the second is the end point.
-  ## The starting point is the last point in the current path, which can be
-  ## changed using moveTo() before creating the curve.
-  ##
+  ## Adds a quadratic Bézier curve to the current sub-path. It requires two
+  ## points: the first one is a control point and the second one is the end
+  ## point. The starting point is the latest point in the current path,
+  ## which can be changed using moveTo() before creating the quadratic
+  ## Bézier curve.
   path.quadraticCurveTo(ctrl.x, ctrl.y, to.x, to.y)
 
-proc arcTo*(path: var Path, ctrl1, ctrl2: Vec2, radius: float32) {.inline.} =
-  ## Adds a circular arc to the current sub-path, using the given control
-  ## points and radius.
+# proc arcTo*(path: var Path, ctrl1, ctrl2: Vec2, radius: float32) {.inline.} =
+#   ## Adds a circular arc to the current sub-path, using the given control
+#   ## points and radius.
 
-  const epsilon = 1e-6.float32
+#   const epsilon = 1e-6.float32
 
-  var radius = radius
-  if radius < 0:
-    radius = -radius
+#   var radius = radius
+#   if radius < 0:
+#     radius = -radius
 
-  if path.commands.len == 0:
-    path.moveTo(ctrl1)
+#   if path.commands.len == 0:
+#     path.moveTo(ctrl1)
 
-  let
-    a = path.at - ctrl1
-    b = ctrl2 - ctrl1
+#   let
+#     a = path.at - ctrl1
+#     b = ctrl2 - ctrl1
 
-  if a.lengthSq() < epsilon:
-    # If the control point is coincident with at, do nothing
-    discard
-  elif abs(a.y * b.x - a.x * b.y) < epsilon or radius == 0:
-    # If ctrl1, a and b are colinear or coincident or radius is zero
-    path.lineTo(ctrl1)
-  else:
-    let
-      c = ctrl2 - path.at
-      als = a.lengthSq()
-      bls = b.lengthSq()
-      cls = c.lengthSq()
-      al = a.length()
-      bl = b.length()
-      l = radius * tan((PI - arccos((als + bls - cls) / 2 * al * bl)) / 2)
-      ta = l / al
-      tb = l / bl
+#   if a.lengthSq() < epsilon:
+#     # If the control point is coincident with at, do nothing
+#     discard
+#   elif abs(a.y * b.x - a.x * b.y) < epsilon or radius == 0:
+#     # If ctrl1, a and b are colinear or coincident or radius is zero
+#     path.lineTo(ctrl1)
+#   else:
+#     let
+#       c = ctrl2 - path.at
+#       als = a.lengthSq()
+#       bls = b.lengthSq()
+#       cls = c.lengthSq()
+#       al = a.length()
+#       bl = b.length()
+#       l = radius * tan((PI - arccos((als + bls - cls) / 2 * al * bl)) / 2)
+#       ta = l / al
+#       tb = l / bl
 
-    if abs(ta - 1) > epsilon:
-      # If the start tangent is not coincident with path.at
-      path.lineTo(ctrl1 + a * ta)
+#     if abs(ta - 1) > epsilon:
+#       # If the start tangent is not coincident with path.at
+#       path.lineTo(ctrl1 + a * ta)
 
-    let to = ctrl1 + b * tb
-    path.commands.add(PathCommand(
-      kind: Arc,
-      numbers: @[
-        radius,
-        radius,
-        0,
-        0,
-        if a.y * c.x > a.x * c.y: 1 else: 0,
-        to.x,
-        to.y
-      ]
-    ))
-    path.at = to
+#     echo "INSIDE ", (als + bls - cls) / 2 * al * bl, " ", arccos((als + bls - cls) / 2 * al * bl)
 
-proc arcTo*(path: var Path, x1, y1, x2, y2, radius: float32) {.inline.} =
-  ## Adds a circular arc to the current sub-path, using the given control
-  ## points and radius.
-  path.arcTo(vec2(x1, y1), vec2(x2, y2), radius)
+#     let to = ctrl1 + b * tb
+#     path.commands.add(PathCommand(
+#       kind: Arc,
+#       numbers: @[
+#         radius,
+#         radius,
+#         0,
+#         0,
+#         if a.y * c.x > a.x * c.y: 1 else: 0,
+#         to.x,
+#         to.y
+#       ]
+#     ))
+#     path.at = to
+
+# proc arcTo*(path: var Path, x1, y1, x2, y2, radius: float32) {.inline.} =
+#   ## Adds a circular arc to the current sub-path, using the given control
+#   ## points and radius.
+#   path.arcTo(vec2(x1, y1), vec2(x2, y2), radius)
 
 proc ellipticalArcTo*(
   path: var Path,
@@ -460,14 +500,25 @@ proc roundedRect*(
   ## Adds a rounded rectangle.
   ## Clockwise param can be used to subtract a rect from a path when using
   ## even-odd winding rule.
+
+  var
+    nw = nw
+    ne = ne
+    se = se
+    sw = sw
+    maxRadius = min(w / 2, h / 2)
+
+  nw = max(0, min(nw, maxRadius))
+  ne = max(0, min(ne, maxRadius))
+  se = max(0, min(se, maxRadius))
+  sw = max(0, min(sw, maxRadius))
+
+  if nw == 0 and ne == 0 and se == 0 and sw == 0:
+    path.rect(x, y, w, h, clockwise)
+    return
+
   let
     s = splineCircleK
-
-    maxRadius = min(w / 2, h / 2)
-    nw = min(nw, maxRadius)
-    ne = min(ne, maxRadius)
-    se = min(se, maxRadius)
-    sw = min(sw, maxRadius)
 
     t1 = vec2(x + nw, y)
     t2 = vec2(x + w - ne, y)
@@ -543,12 +594,20 @@ proc ellipse*(path: var Path, center: Vec2, rx, ry: float32) {.inline.} =
   ## Adds a ellipse.
   path.ellipse(center.x, center.y, rx, ry)
 
+proc circle*(path: var Path, cx, cy, r: float32) {.inline.} =
+  ## Adds a circle.
+  path.ellipse(cx, cy, r, r)
+
 proc circle*(path: var Path, center: Vec2, r: float32) {.inline.} =
   ## Adds a circle.
   path.ellipse(center.x, center.y, r, r)
 
+proc circle*(path: var Path, circle: Circle) {.inline.} =
+  ## Adds a circle.
+  path.ellipse(circle.pos.x, circle.pos.y, circle.radius, circle.radius)
+
 proc polygon*(path: var Path, x, y, size: float32, sides: int) =
-  ## Draws an n-sided regular polygon at (x, y) with the parameter size.
+  ## Adds an n-sided regular polygon at (x, y) with the parameter size.
   path.moveTo(x + size * cos(0.0), y + size * sin(0.0))
   for side in 0 .. sides:
     path.lineTo(
@@ -557,11 +616,13 @@ proc polygon*(path: var Path, x, y, size: float32, sides: int) =
     )
 
 proc polygon*(path: var Path, pos: Vec2, size: float32, sides: int) {.inline.} =
-  ## Draws a n-sided regular polygon at (x, y) with the parameter size.
+  ## Adds a n-sided regular polygon at (x, y) with the parameter size.
   path.polygon(pos.x, pos.y, size, sides)
 
-proc commandsToShapes*(path: Path, pixelScale: float32 = 1.0): seq[seq[Vec2]] =
-  ## Converts SVG-like commands to line segments.
+proc commandsToShapes*(
+  path: Path, closeSubpaths = false, pixelScale: float32 = 1.0
+): seq[seq[Vec2]] =
+  ## Converts SVG-like commands to sequences of vectors.
   var
     start, at: Vec2
     shape: seq[Vec2]
@@ -758,8 +819,10 @@ proc commandsToShapes*(path: Path, pixelScale: float32 = 1.0): seq[seq[Vec2]] =
     case command.kind:
     of Move:
       if shape.len > 0:
+        if closeSubpaths:
+          shape.addSegment(at, start)
         result.add(shape)
-        shape.setLen(0)
+        shape = newSeq[Vec2]()
       at.x = command.numbers[0]
       at.y = command.numbers[1]
       start = at
@@ -833,7 +896,7 @@ proc commandsToShapes*(path: Path, pixelScale: float32 = 1.0): seq[seq[Vec2]] =
     of RMove:
       if shape.len > 0:
         result.add(shape)
-        shape.setLen(0)
+        shape = newSeq[Vec2]()
       at.x += command.numbers[0]
       at.y += command.numbers[1]
       start = at
@@ -911,12 +974,110 @@ proc commandsToShapes*(path: Path, pixelScale: float32 = 1.0): seq[seq[Vec2]] =
         at = start
       if shape.len > 0:
         result.add(shape)
-        shape.setLen(0)
+        shape = newSeq[Vec2]()
 
     prevCommandKind = command.kind
 
   if shape.len > 0:
+    if closeSubpaths:
+      shape.addSegment(at, start)
     result.add(shape)
+
+proc shapesToSegments(shapes: seq[seq[Vec2]]): seq[(Segment, int16)] =
+  ## Converts the shapes into a set of filtered segments with winding value.
+  for shape in shapes:
+    for segment in shape.segments:
+      if segment.at.y == segment.to.y: # Skip horizontal
+        continue
+      var
+        segment = segment
+        winding = 1.int16
+      if segment.at.y > segment.to.y:
+        swap(segment.at, segment.to)
+        winding = -1
+
+      result.add((segment, winding))
+
+proc requiresAntiAliasing(segments: seq[(Segment, int16)]): bool =
+  ## Returns true if the fill requires antialiasing.
+
+  template hasFractional(v: float32): bool =
+    v - trunc(v) != 0
+
+  for i in 0 ..< segments.len: # For arc
+    let segment = segments[i][0]
+    if segment.at.x != segment.to.x or
+      segment.at.x.hasFractional() or # at.x and to.x are the same
+      segment.at.y.hasFractional() or
+      segment.to.y.hasFractional():
+      # AA is required if all segments are not vertical or have fractional > 0
+      return true
+
+proc computePixelBounds(segments: seq[(Segment, int16)]): Rect =
+  ## Compute the bounds of the segments.
+  var
+    xMin = float32.high
+    xMax = float32.low
+    yMin = float32.high
+    yMax = float32.low
+  for i in 0 ..< segments.len: # For arc
+    let segment = segments[i][0]
+    xMin = min(xMin, min(segment.at.x, segment.to.x))
+    xMax = max(xMax, max(segment.at.x, segment.to.x))
+    yMin = min(yMin, segment.at.y)
+    yMax = max(yMax, segment.to.y)
+
+  xMin = floor(xMin)
+  xMax = ceil(xMax)
+  yMin = floor(yMin)
+  yMax = ceil(yMax)
+
+  if xMin.isNaN() or xMax.isNaN() or yMin.isNaN() or yMax.isNaN():
+    discard
+  else:
+    result.x = xMin
+    result.y = yMin
+    result.w = xMax - xMin
+    result.h = yMax - yMin
+
+proc computePixelBounds*(path: Path): Rect =
+  ## Compute the bounds of the path.
+  path.commandsToShapes().shapesToSegments().computePixelBounds()
+
+proc partitionSegments(
+  segments: seq[(Segment, int16)], top, height: int
+): Partitioning =
+  ## Puts segments into the height partitions they intersect with.
+  let
+    maxPartitions = max(1, height div 10).uint32
+    numPartitions = min(maxPartitions, max(1, segments.len div 10).uint32)
+
+  result.partitions.setLen(numPartitions)
+  result.startY = top.uint32
+  result.partitionHeight = height.uint32 div numPartitions
+
+  for (segment, winding) in segments:
+    if result.partitionHeight == 0:
+      result.partitions[0].add((segment, winding))
+    else:
+      var
+        atPartition = max(0, segment.at.y - result.startY.float32).uint32
+        toPartition = max(0, ceil(segment.to.y - result.startY.float32)).uint32
+      atPartition = atPartition div result.partitionHeight
+      toPartition = toPartition div result.partitionHeight
+      atPartition = clamp(atPartition, 0, result.partitions.high.uint32)
+      toPartition = clamp(toPartition, 0, result.partitions.high.uint32)
+      for i in atPartition .. toPartition:
+        result.partitions[i].add((segment, winding))
+
+proc getIndexForY(partitioning: Partitioning, y: int): uint32 {.inline.} =
+  if partitioning.partitionHeight == 0 or partitioning.partitions.len == 1:
+    0.uint32
+  else:
+    min(
+      (y.uint32 - partitioning.startY) div partitioning.partitionHeight,
+      partitioning.partitions.high.uint32
+    )
 
 proc quickSort(a: var seq[(float32, int16)], inl, inr: int) =
   ## Sorts in place + faster than standard lib sort.
@@ -939,29 +1100,15 @@ proc quickSort(a: var seq[(float32, int16)], inl, inr: int) =
   quickSort(a, inl, r)
   quickSort(a, l, inr)
 
-proc computeBounds(partitions: seq[seq[(Segment, int16)]]): Rect =
-  ## Compute bounds of a shape segments with windings.
-  var
-    xMin = float32.high
-    xMax = float32.low
-    yMin = float32.high
-    yMax = float32.low
-  for partition in partitions:
-    for (segment, _) in partition:
-      xMin = min(xMin, min(segment.at.x, segment.to.x))
-      xMax = max(xMax, max(segment.at.x, segment.to.x))
-      yMin = min(yMin, min(segment.at.y, segment.to.y))
-      yMax = max(yMax, max(segment.at.y, segment.to.y))
-
-  xMin = floor(xMin)
-  xMax = ceil(xMax)
-  yMin = floor(yMin)
-  yMax = ceil(yMax)
-
-  result.x = xMin
-  result.y = yMin
-  result.w = xMax - xMin
-  result.h = yMax - yMin
+proc insertionSort(s: var seq[(float32, int16)], hi: int) {.inline.} =
+  for i in 1 .. hi:
+    var
+      j = i - 1
+      k = i
+    while j >= 0 and s[j][0] > s[k][0]:
+      swap(s[j + 1], s[j])
+      dec j
+      dec k
 
 proc shouldFill(windingRule: WindingRule, count: int): bool {.inline.} =
   ## Should we fill based on the current winding rule and count?
@@ -971,196 +1118,153 @@ proc shouldFill(windingRule: WindingRule, count: int): bool {.inline.} =
   of wrEvenOdd:
     count mod 2 != 0
 
-proc partitionSegments(
-  shapes: seq[seq[Vec2]], height: int
-): seq[seq[(Segment, int16)]] =
-  ## Puts segments into the height partitions they intersect with.
-  var segmentCount: int
-  for shape in shapes:
-    segmentCount += shape.len - 1
+iterator walk(
+  hits: seq[(float32, int16)],
+  numHits: int,
+  windingRule: WindingRule,
+  y: int,
+  size: Vec2
+): (float32, float32, int32) =
+  var
+    prevAt: float32
+    count: int32
+  for i in 0 ..< numHits:
+    let (at, winding) = hits[i]
+    if windingRule == wrNonZero and
+      (count != 0) == (count + winding != 0) and
+      i < numHits - 1:
+      # Shortcut: if nonzero rule, we only care about when the count changes
+      # between zero and nonzero (or the last hit)
+      count += winding
+      continue
+    if at > 0:
+      if shouldFill(windingRule, count):
+        yield (prevAt, at, count)
+      prevAt = at
+    count += winding
 
-  let
-    maxPartitions = max(1, height div 10).uint32
-    numPartitions = min(maxPartitions, max(1, segmentCount div 10).uint32)
-    partitionHeight = (height.uint32 div numPartitions)
+  when defined(pixieLeakCheck):
+    if prevAt != size.x and count != 0:
+      echo "Leak detected: ", count, " @ (", prevAt, ", ", y, ")"
 
-  var partitions = newSeq[seq[(Segment, int16)]](numPartitions)
-  for shape in shapes:
-    for segment in shape.segments:
-      if segment.at.y == segment.to.y: # Skip horizontal
-        continue
-      var
-        segment = segment
-        winding = 1.int16
-      if segment.at.y > segment.to.y:
-        swap(segment.at, segment.to)
-        winding = -1
-
-      if partitionHeight == 0:
-        partitions[0].add((segment, winding))
-      else:
-        var
-          atPartition = max(0, segment.at.y).uint32 div partitionHeight
-          toPartition = max(0, ceil(segment.to.y)).uint32 div partitionHeight
-        atPartition = clamp(atPartition, 0, partitions.high.uint32)
-        toPartition = clamp(toPartition, 0, partitions.high.uint32)
-        for i in atPartition .. toPartition:
-          partitions[i].add((segment, winding))
-
-  partitions
-
-template computeCoverages(
+proc computeCoverages(
   coverages: var seq[uint8],
   hits: var seq[(float32, int16)],
+  numHits: var int,
   size: Vec2,
   y: int,
-  partitions: seq[seq[(Segment, int16)]],
-  partitionHeight: uint32,
+  aa: bool,
+  partitioning: Partitioning,
   windingRule: WindingRule
-) =
-  const
-    quality = 5 # Must divide 255 cleanly (1, 3, 5, 15, 17, 51, 85)
+) {.inline.} =
+  let
+    quality = if aa: 5 else: 1 # Must divide 255 cleanly (1, 3, 5, 15, 17, 51, 85)
     sampleCoverage = (255 div quality).uint8
     offset = 1 / quality.float32
     initialOffset = offset / 2 + epsilon
 
-  let
-    partition =
-      if partitionHeight == 0 or partitions.len == 1:
-        0.uint32
-      else:
-        min(y.uint32 div partitionHeight, partitions.high.uint32)
-
-  zeroMem(coverages[0].addr, coverages.len)
+  if aa: # Coverage is only used for anti-aliasing
+    zeroMem(coverages[0].addr, coverages.len)
 
   # Do scanlines for this row
+  let partitionIndex = partitioning.getIndexForY(y)
   var
     yLine = y.float32 + initialOffset - offset
-    numHits: int
+    scanline = line(vec2(0, yLine), vec2(size.x, yLine))
   for m in 0 ..< quality:
     yLine += offset
-    let scanline = line(vec2(0, yLine), vec2(size.x, yLine))
+    scanline.a.y = yLine
+    scanline.b.y = yLine
     numHits = 0
-    for (segment, winding) in partitions[partition]:
+    for i in 0 ..< partitioning.partitions[partitionIndex].len: # For arc
+      let
+        segment = partitioning.partitions[partitionIndex][i][0]
+        winding = partitioning.partitions[partitionIndex][i][1]
       if segment.at.y <= scanline.a.y and segment.to.y >= scanline.a.y:
         var at: Vec2
-        if scanline.intersects(segment, at): # and segment.to != at:
+        if segment.to != at and scanline.intersects(segment, at):
           if numHits == hits.len:
             hits.setLen(hits.len * 2)
           hits[numHits] = (min(at.x, size.x), winding)
           inc numHits
 
-    quickSort(hits, 0, numHits - 1)
+    if hits.len > 32:
+      quickSort(hits, 0, numHits - 1)
+    else:
+      insertionSort(hits, numHits - 1)
 
-    var
-      prevAt: float32
-      count: int
-    for i in 0 ..< numHits:
-      let (at, winding) = hits[i]
-      if windingRule == wrNonZero and
-        (count != 0) == (count + winding != 0) and
-        i < numHits - 1:
-        # Shortcut: if nonzero rule, we only care about when the count changes
-        # between zero and nonzero (or the last hit)
-        count += winding
-        continue
-      if at > 0:
-        if shouldFill(windingRule, count):
-          var fillStart = prevAt.int
+    if aa:
+      for (prevAt, at, count) in hits.walk(numHits, windingRule, y, size):
+        var fillStart = prevAt.int
 
-          let
-            pixelCrossed = at.int - prevAt.int > 0
-            leftCover =
-              if pixelCrossed:
-                trunc(prevAt) + 1 - prevAt
-              else:
-                at - prevAt
-          if leftCover != 0:
-            inc fillStart
-            coverages[prevAt.int] += (leftCover * sampleCoverage.float32).uint8
+        let
+          pixelCrossed = at.int - prevAt.int > 0
+          leftCover =
+            if pixelCrossed:
+              trunc(prevAt) + 1 - prevAt
+            else:
+              at - prevAt
+        if leftCover != 0:
+          inc fillStart
+          coverages[prevAt.int] += (leftCover * sampleCoverage.float32).uint8
 
-          if pixelCrossed:
-            let rightCover = at - trunc(at)
-            if rightCover > 0:
-              coverages[at.int] += (rightCover * sampleCoverage.float32).uint8
+        if pixelCrossed:
+          let rightCover = at - trunc(at)
+          if rightCover > 0:
+            coverages[at.int] += (rightCover * sampleCoverage.float32).uint8
 
-          let fillLen = at.int - fillStart
-          if fillLen > 0:
-            var i = fillStart
-            when defined(amd64) and not defined(pixieNoSimd):
-              let vSampleCoverage = mm_set1_epi8(cast[int8](sampleCoverage))
-              for j in countup(i, fillStart + fillLen - 16, 16):
-                var coverage = mm_loadu_si128(coverages[j].addr)
-                coverage = mm_add_epi8(coverage, vSampleCoverage)
-                mm_storeu_si128(coverages[j].addr, coverage)
-                i += 16
-            for j in i ..< fillStart + fillLen:
-              coverages[j] += sampleCoverage
+        let fillLen = at.int - fillStart
+        if fillLen > 0:
+          var i = fillStart
+          when defined(amd64) and not defined(pixieNoSimd):
+            let vSampleCoverage = mm_set1_epi8(cast[int8](sampleCoverage))
+            for j in countup(i, fillStart + fillLen - 16, 16):
+              var coverage = mm_loadu_si128(coverages[j].addr)
+              coverage = mm_add_epi8(coverage, vSampleCoverage)
+              mm_storeu_si128(coverages[j].addr, coverage)
+              i += 16
+          for j in i ..< fillStart + fillLen:
+            coverages[j] += sampleCoverage
 
-        prevAt = at
+proc clearUnsafe(target: Image | Mask, startX, startY, toX, toY: int) =
+  ## Clears data from [start, to).
+  let
+    start = target.dataIndex(startX, startY)
+    len = target.dataIndex(toX, toY) - start
+  when type(target) is Image:
+    target.data.fillUnsafe(rgbx(0, 0, 0, 0), start, len)
+  else: # target is Mask
+    target.data.fillUnsafe(0, start, len)
 
-      count += winding
-
-proc fillShapes(
+proc fillCoverage(
   image: Image,
-  shapes: seq[seq[Vec2]],
-  color: SomeColor,
-  windingRule: WindingRule,
+  rgbx: ColorRGBX,
+  startX, y: int,
+  coverages: seq[uint8],
   blendMode: BlendMode
 ) =
-  let
-    rgbx = color.asRgbx()
-    partitions = partitionSegments(shapes, image.height)
-    partitionHeight = image.height.uint32 div partitions.len.uint32
-
-  # Figure out the total bounds of all the shapes,
-  # rasterize only within the total bounds
-  let
-    bounds = computeBounds(partitions)
-    startX = max(0, bounds.x.int)
-    startY = max(0, bounds.y.int)
-    stopY = min(image.height, (bounds.y + bounds.h).int)
-    blender = blendMode.blender()
-
+  var x = startX
   when defined(amd64) and not defined(pixieNoSimd):
-    let
-      blenderSimd = blendMode.blenderSimd()
-      first32 = cast[M128i]([uint32.high, 0, 0, 0]) # First 32 bits
-      oddMask = mm_set1_epi16(cast[int16](0xff00))
-      div255 = mm_set1_epi16(cast[int16](0x8081))
-      vColor = mm_set1_epi32(cast[int32](rgbx))
-
-  var
-    coverages = newSeq[uint8](image.width)
-    hits = newSeq[(float32, int16)](4)
-
-  for y in startY ..< stopY:
-    computeCoverages(
-      coverages,
-      hits,
-      image.wh,
-      y,
-      partitions,
-      partitionHeight,
-      windingRule
-    )
-
-    # Apply the coverage and blend
-    var x = startX
-    when defined(amd64) and not defined(pixieNoSimd):
+    if blendMode.hasSimdBlender():
       # When supported, SIMD blend as much as possible
+      let
+        blenderSimd = blendMode.blenderSimd()
+        first32 = cast[M128i]([uint32.high, 0, 0, 0]) # First 32 bits
+        oddMask = mm_set1_epi16(cast[int16](0xff00))
+        div255 = mm_set1_epi16(cast[int16](0x8081))
+        vColor = mm_set1_epi32(cast[int32](rgbx))
       for _ in countup(x, image.width - 16, 4):
-        var coverage = mm_loadu_si128(coverages[x].addr)
+        var coverage = mm_loadu_si128(coverages[x].unsafeAddr)
         coverage = mm_and_si128(coverage, first32)
 
         let
           index = image.dataIndex(x, y)
           eqZero = mm_cmpeq_epi16(coverage, mm_setzero_si128())
-        if mm_movemask_epi8(eqZero) != 0xffff:
+        if mm_movemask_epi8(eqZero) != 0xffff: # or blendMode == bmExcludeMask:
           # If the coverages are not all zero
           if mm_movemask_epi8(mm_cmpeq_epi32(coverage, first32)) == 0xffff:
             # Coverages are all 255
-            if rgbx.a == 255 and blendMode == bmNormal:
+            if blendMode == bmNormal and rgbx.a == 255:
               mm_storeu_si128(image.data[index].addr, vColor)
             else:
               let backdrop = mm_loadu_si128(image.data[index].addr)
@@ -1192,110 +1296,288 @@ proc fillShapes(
               image.data[index].addr,
               blenderSimd(backdrop, source)
             )
+        elif blendMode == bmMask:
+          mm_storeu_si128(image.data[index].addr, mm_setzero_si128())
         x += 4
 
-    while x < image.width:
-      if x + 8 <= coverages.len:
-        let peeked = cast[ptr uint64](coverages[x].addr)[]
-        if peeked == 0:
-          x += 8
-          continue
-
-      let coverage = coverages[x]
-      if coverage != 0:
+  let blender = blendMode.blender()
+  while x < image.width:
+    let coverage = coverages[x]
+    if coverage != 0 or blendMode == bmExcludeMask:
+      if blendMode == bmNormal and coverage == 255 and rgbx.a == 255:
+        # Skip blending
+        image.setRgbaUnsafe(x, y, rgbx)
+      else:
         var source = rgbx
         if coverage != 255:
           source.r = ((source.r.uint32 * coverage) div 255).uint8
           source.g = ((source.g.uint32 * coverage) div 255).uint8
           source.b = ((source.b.uint32 * coverage) div 255).uint8
           source.a = ((source.a.uint32 * coverage) div 255).uint8
+        let backdrop = image.getRgbaUnsafe(x, y)
+        image.setRgbaUnsafe(x, y, blender(backdrop, source))
+    elif blendMode == bmMask:
+      image.setRgbaUnsafe(x, y, rgbx(0, 0, 0, 0))
+    inc x
 
-        if source.a == 255 and blendMode == bmNormal:
-          # Skip blending
-          image.setRgbaUnsafe(x, y, source)
-        else:
-          let backdrop = image.getRgbaUnsafe(x, y)
-          image.setRgbaUnsafe(x, y, blender(backdrop, source))
-      inc x
+  if blendMode == bmMask:
+    image.clearUnsafe(0, y, startX, y)
+
+proc fillCoverage(
+  mask: Mask,
+  startX, y: int,
+  coverages: seq[uint8],
+  blendMode: BlendMode
+) =
+  var x = startX
+  when defined(amd64) and not defined(pixieNoSimd):
+    if blendMode.hasSimdMasker():
+      let maskerSimd = blendMode.maskerSimd()
+      for _ in countup(x, coverages.len - 16, 16):
+        let
+          index = mask.dataIndex(x, y)
+          coverage = mm_loadu_si128(coverages[x].unsafeAddr)
+          eqZero = mm_cmpeq_epi16(coverage, mm_setzero_si128())
+        if mm_movemask_epi8(eqZero) != 0xffff: # or blendMode == bmExcludeMask:
+          # If the coverages are not all zero
+          let backdrop = mm_loadu_si128(mask.data[index].addr)
+          mm_storeu_si128(
+            mask.data[index].addr,
+            maskerSimd(backdrop, coverage)
+          )
+        elif blendMode == bmMask:
+          mm_storeu_si128(mask.data[index].addr, mm_setzero_si128())
+        x += 16
+
+  let masker = blendMode.masker()
+  while x < mask.width:
+    let coverage = coverages[x]
+    if coverage != 0 or blendMode == bmExcludeMask:
+      let backdrop = mask.getValueUnsafe(x, y)
+      mask.setValueUnsafe(x, y, masker(backdrop, coverage))
+    elif blendMode == bmMask:
+      mask.setValueUnsafe(x, y, 0)
+    inc x
+
+  if blendMode == bmMask:
+    mask.clearUnsafe(0, y, startX, y)
+
+proc fillHits(
+  image: Image,
+  rgbx: ColorRGBX,
+  startX, y: int,
+  hits: seq[(float32, int16)],
+  numHits: int,
+  windingRule: WindingRule,
+  blendMode: BlendMode
+) =
+  let blender = blendMode.blender()
+  var filledTo: int
+  for (prevAt, at, count) in hits.walk(numHits, windingRule, y, image.wh):
+    let
+      fillStart = prevAt.int
+      fillLen = at.int - fillStart
+    if fillLen <= 0:
+      continue
+
+    filledTo = fillStart + fillLen
+
+    if blendMode == bmNormal and rgbx.a == 255:
+      fillUnsafe(image.data, rgbx, image.dataIndex(fillStart, y), fillLen)
+      continue
+
+    var x = fillStart
+    when defined(amd64) and not defined(pixieNoSimd):
+      if blendMode.hasSimdBlender():
+        # When supported, SIMD blend as much as possible
+        let
+          blenderSimd = blendMode.blenderSimd()
+          vColor = mm_set1_epi32(cast[int32](rgbx))
+        for _ in countup(fillStart, fillLen - 16, 4):
+          let
+            index = image.dataIndex(x, y)
+            backdrop = mm_loadu_si128(image.data[index].addr)
+          mm_storeu_si128(
+            image.data[index].addr,
+            blenderSimd(backdrop, vColor)
+          )
+          x += 4
+
+    for x in x ..< fillStart + fillLen:
+      let backdrop = image.getRgbaUnsafe(x, y)
+      image.setRgbaUnsafe(x, y, blender(backdrop, rgbx))
+
+  if blendMode == bmMask:
+    image.clearUnsafe(0, y, startX, y)
+    image.clearUnsafe(filledTo, y, image.width, y)
+
+proc fillHits(
+  mask: Mask,
+  startX, y: int,
+  hits: seq[(float32, int16)],
+  numHits: int,
+  windingRule: WindingRule,
+  blendMode: BlendMode
+) =
+  let masker = blendMode.masker()
+  var filledTo: int
+  for (prevAt, at, count) in hits.walk(numHits, windingRule, y, mask.wh):
+    let
+      fillStart = prevAt.int
+      fillLen = at.int - fillStart
+    if fillLen <= 0:
+      continue
+
+    filledTo = fillStart + fillLen
+
+    if blendMode == bmNormal:
+      fillUnsafe(mask.data, 255, mask.dataIndex(fillStart, y), fillLen)
+      continue
+
+    var x = fillStart
+    when defined(amd64) and not defined(pixieNoSimd):
+      if blendMode.hasSimdMasker():
+        let
+          maskerSimd = blendMode.maskerSimd()
+          vValue = mm_set1_epi8(cast[int8](255))
+        for _ in countup(fillStart, fillLen - 16, 16):
+          let backdrop = mm_loadu_si128(mask.data[mask.dataIndex(x, y)].addr)
+          mm_storeu_si128(
+            mask.data[mask.dataIndex(x, y)].addr,
+            maskerSimd(backdrop, vValue)
+          )
+          x += 16
+
+    for x in x ..< fillStart + fillLen:
+      let backdrop = mask.getValueUnsafe(x, y)
+      mask.setValueUnsafe(x, y, masker(backdrop, 255))
+
+  if blendMode == bmMask:
+    mask.clearUnsafe(0, y, startX, y)
+    mask.clearUnsafe(filledTo, y, mask.width, y)
+
+proc fillShapes(
+  image: Image,
+  shapes: seq[seq[Vec2]],
+  color: SomeColor,
+  windingRule: WindingRule,
+  blendMode: BlendMode
+) =
+  # Figure out the total bounds of all the shapes,
+  # rasterize only within the total bounds
+  let
+    rgbx = color.asRgbx()
+    segments = shapes.shapesToSegments()
+    aa = segments.requiresAntiAliasing()
+    bounds = computePixelBounds(segments)
+    startX = max(0, bounds.x.int)
+    startY = max(0, bounds.y.int)
+    pathHeight = min(image.height, (bounds.y + bounds.h).int)
+    partitioning = partitionSegments(segments, startY, pathHeight - startY)
+
+  var
+    coverages = newSeq[uint8](image.width)
+    hits = newSeq[(float32, int16)](4)
+    numHits: int
+
+  for y in startY ..< pathHeight:
+    computeCoverages(
+      coverages,
+      hits,
+      numHits,
+      image.wh,
+      y,
+      aa,
+      partitioning,
+      windingRule
+    )
+    if aa:
+      image.fillCoverage(
+        rgbx,
+        startX,
+        y,
+        coverages,
+        blendMode
+      )
+    else:
+      image.fillHits(
+        rgbx,
+        startX,
+        y,
+        hits,
+        numHits,
+        windingRule,
+        blendMode
+      )
+
+  if blendMode == bmMask:
+    image.clearUnsafe(0, 0, 0, startY)
+    image.clearUnsafe(0, pathHeight, 0, image.height)
 
 proc fillShapes(
   mask: Mask,
   shapes: seq[seq[Vec2]],
-  windingRule: WindingRule
+  windingRule: WindingRule,
+  blendMode: BlendMode
 ) =
-  let
-    partitions = partitionSegments(shapes, mask.height)
-    partitionHeight = mask.height.uint32 div partitions.len.uint32
-
   # Figure out the total bounds of all the shapes,
   # rasterize only within the total bounds
   let
-    bounds = computeBounds(partitions)
+    segments = shapes.shapesToSegments()
+    aa = segments.requiresAntiAliasing()
+    bounds = computePixelBounds(segments)
     startX = max(0, bounds.x.int)
     startY = max(0, bounds.y.int)
-    stopY = min(mask.height, (bounds.y + bounds.h).int)
-
-  when defined(amd64) and not defined(pixieNoSimd):
-    let maskerSimd = bmNormal.maskerSimd()
+    pathHeight = min(mask.height, (bounds.y + bounds.h).int)
+    partitioning = partitionSegments(segments, startY, pathHeight)
 
   var
     coverages = newSeq[uint8](mask.width)
     hits = newSeq[(float32, int16)](4)
+    numHits: int
 
-  for y in startY ..< stopY:
+  for y in startY ..< pathHeight:
     computeCoverages(
       coverages,
       hits,
+      numHits,
       mask.wh,
       y,
-      partitions,
-      partitionHeight,
+      aa,
+      partitioning,
       windingRule
     )
+    if aa:
+      mask.fillCoverage(startX, y, coverages, blendMode)
+    else:
+      mask.fillHits(startX, y, hits, numHits, windingRule, blendMode)
 
-    # Apply the coverage and blend
-    var x = startX
-    when defined(amd64) and not defined(pixieNoSimd):
-      # When supported, SIMD blend as much as possible
-      for _ in countup(x, coverages.len - 16, 16):
-        let
-          coverage = mm_loadu_si128(coverages[x].addr)
-          eqZero = mm_cmpeq_epi16(coverage, mm_setzero_si128())
-        if mm_movemask_epi8(eqZero) != 0xffff:
-          # If the coverages are not all zero
-          let backdrop = mm_loadu_si128(mask.data[mask.dataIndex(x, y)].addr)
-          mm_storeu_si128(
-            mask.data[mask.dataIndex(x, y)].addr,
-            maskerSimd(backdrop, coverage)
-          )
-        x += 16
+  if blendMode == bmMask:
+    mask.clearUnsafe(0, 0, 0, startY)
+    mask.clearUnsafe(0, pathHeight, 0, mask.height)
 
-    while x < mask.width:
-      if x + 8 <= coverages.len:
-        let peeked = cast[ptr uint64](coverages[x].addr)[]
-        if peeked == 0:
-          x += 8
-          continue
+proc miterLimitToAngle*(limit: float32): float32 =
+  ## Converts miter-limit-ratio to miter-limit-angle.
+  arcsin(1 / limit) * 2
 
-      let coverage = coverages[x]
-      if coverage != 0:
-        let
-          backdrop = mask.getValueUnsafe(x, y)
-          blended = blendAlpha(backdrop, coverage)
-        mask.setValueUnsafe(x, y, blended)
-      inc x
+proc angleToMiterLimit*(angle: float32): float32 =
+  ## Converts miter-limit-angle to miter-limit-ratio.
+  1 / sin(angle / 2)
 
 proc strokeShapes(
   shapes: seq[seq[Vec2]],
   strokeWidth: float32,
   lineCap: LineCap,
   lineJoin: LineJoin,
-  miterAngleLimit = degToRad(28.96)
+  miterLimit: float32,
+  dashes: seq[float32]
 ): seq[seq[Vec2]] =
-  if strokeWidth == 0:
+  if strokeWidth <= 0:
     return
 
-  let halfStroke = strokeWidth / 2
+  let
+    halfStroke = strokeWidth / 2
+    miterAngleLimit = miterLimitToAngle(miterLimit)
 
   proc makeCircle(at: Vec2): seq[Vec2] =
     var path: Path
@@ -1356,7 +1638,7 @@ proc strokeShapes(
         return @[a + pos, b + pos, pos, a + pos]
 
       of ljRound:
-        return makeCircle(prevPos)
+        return makeCircle(pos)
 
   for shape in shapes:
     var shapeStroke: seq[seq[Vec2]]
@@ -1376,12 +1658,31 @@ proc strokeShapes(
           shape[0]
         ))
 
+    var dashes = dashes
+    if dashes.len mod 2 != 0:
+      dashes.add(dashes)
+
     for i in 1 ..< shape.len:
       let
         pos = shape[i]
         prevPos = shape[i - 1]
 
-      shapeStroke.add(makeRect(prevPos, pos))
+      if dashes.len > 0:
+        var distance = dist(prevPos, pos)
+        let dir = dir(pos, prevPos)
+        var currPos = prevPos
+        block dashLoop:
+          while true:
+            for i, d in dashes:
+              if i mod 2 == 0:
+                let d = min(distance, d)
+                shapeStroke.add(makeRect(currPos, currPos + dir * d))
+              currPos += dir * d
+              distance -= d
+              if distance <= 0:
+                break dashLoop
+      else:
+        shapeStroke.add(makeRect(prevPos, pos))
 
       # If we need a line join
       if i < shape.len - 1:
@@ -1405,92 +1706,58 @@ proc strokeShapes(
     result.add(shapeStroke)
 
 proc parseSomePath(
-  path: SomePath, pixelScale: float32 = 1.0
+  path: SomePath, closeSubpaths: bool, pixelScale: float32 = 1.0
 ): seq[seq[Vec2]] {.inline.} =
   ## Given SomePath, parse it in different ways.
   when type(path) is string:
-    parsePath(path).commandsToShapes(pixelScale)
+    parsePath(path).commandsToShapes(closeSubpaths, pixelScale)
   elif type(path) is Path:
-    path.commandsToShapes(pixelScale)
-  elif type(path) is seq[seq[Vec2]]:
-    path
+    path.commandsToShapes(closeSubpaths, pixelScale)
 
-proc fillPath*(
-  image: Image,
-  path: SomePath,
-  color: SomeColor,
-  windingRule = wrNonZero,
-  blendMode = bmNormal
-) {.inline.} =
-  ## Fills a path.
-  image.fillShapes(parseSomePath(path), color, windingRule, blendMode)
-
-proc fillPath*(
-  image: Image,
-  path: SomePath,
-  color: SomeColor,
-  transform: Vec2 | Mat3,
-  windingRule = wrNonZero,
-  blendMode = bmNormal
-) =
-  ## Fills a path.
-  when type(transform) is Mat3:
-    let pixelScale = transform.maxScale()
+proc transform(shapes: var seq[seq[Vec2]], transform: Vec2 | Mat3) =
+  when type(transform) is Vec2:
+    if transform != vec2():
+      for shape in shapes.mitems:
+        for segment in shape.mitems:
+          segment += transform
   else:
-    let pixelScale = 1.0
-  var shapes = parseSomePath(path, pixelScale)
-  for shape in shapes.mitems:
-    for segment in shape.mitems:
-      when type(transform) is Vec2:
-        segment += transform
-      else:
-        segment = transform * segment
-  image.fillShapes(shapes, color, windingRule, blendMode)
+    if transform != mat3():
+      for shape in shapes.mitems:
+        for segment in shape.mitems:
+          segment = transform * segment
 
 proc fillPath*(
   mask: Mask,
   path: SomePath,
-  windingRule = wrNonZero
-) {.inline.} =
-  ## Fills a path.
-  mask.fillShapes(parseSomePath(path), windingRule)
-
-proc fillPath*(
-  mask: Mask,
-  path: SomePath,
-  transform: Vec2 | Mat3,
-  windingRule = wrNonZero
+  transform: Vec2 | Mat3 = vec2(),
+  windingRule = wrNonZero,
+  blendMode = bmNormal
 ) =
   ## Fills a path.
-  when type(transform) is Mat3:
-    let pixelScale = transform.maxScale()
-  else:
-    let pixelScale = 1.0
-  var shapes = parseSomePath(path, pixelScale)
-  for shape in shapes.mitems:
-    for segment in shape.mitems:
-      when type(transform) is Vec2:
-        segment += transform
-      else:
-        segment = transform * segment
-  mask.fillShapes(shapes, windingRule)
+  var shapes = parseSomePath(path, true, transform.pixelScale())
+  shapes.transform(transform)
+  mask.fillShapes(shapes, windingRule, blendMode)
 
 proc fillPath*(
   image: Image,
   path: SomePath,
   paint: Paint,
-  windingRule = wrNonZero,
+  transform: Vec2 | Mat3 = vec2(),
+  windingRule = wrNonZero
 ) =
   ## Fills a path.
   if paint.kind == pkSolid:
-    image.fillPath(path, paint.color)
+    if paint.color.a > 0 or paint.blendMode == bmOverwrite:
+      var shapes = parseSomePath(path, true, transform.pixelScale())
+      shapes.transform(transform)
+      image.fillShapes(shapes, paint.color, windingRule, paint.blendMode)
     return
 
   let
     mask = newMask(image.width, image.height)
     fill = newImage(image.width, image.height)
 
-  mask.fillPath(parseSomePath(path), windingRule)
+  mask.fillPath(path, transform, windingRule)
 
   case paint.kind:
     of pkSolid:
@@ -1500,106 +1767,94 @@ proc fillPath*(
     of pkImageTiled:
       fill.drawTiled(paint.image, paint.imageMat)
     of pkGradientLinear:
-      fill.fillLinearGradient(
-        paint.gradientHandlePositions[0],
-        paint.gradientHandlePositions[1],
-        paint.gradientStops
-      )
+      fill.fillGradientLinear(paint)
     of pkGradientRadial:
-      fill.fillRadialGradient(
-        paint.gradientHandlePositions[0],
-        paint.gradientHandlePositions[1],
-        paint.gradientHandlePositions[2],
-        paint.gradientStops
-      )
+      fill.fillGradientRadial(paint)
     of pkGradientAngular:
-      fill.fillAngularGradient(
-        paint.gradientHandlePositions[0],
-        paint.gradientHandlePositions[1],
-        paint.gradientHandlePositions[2],
-        paint.gradientStops
-      )
+      fill.fillGradientAngular(paint)
 
   fill.draw(mask)
   image.draw(fill, blendMode = paint.blendMode)
 
 proc strokePath*(
-  image: Image,
+  mask: Mask,
   path: SomePath,
-  color: SomeColor,
+  transform: Vec2 | Mat3 = vec2(),
   strokeWidth = 1.0,
   lineCap = lcButt,
   lineJoin = ljMiter,
+  miterLimit = defaultMiterLimit,
+  dashes: seq[float32] = @[],
   blendMode = bmNormal
 ) =
   ## Strokes a path.
-  let strokeShapes = strokeShapes(
-    parseSomePath(path), strokeWidth, lineCap, lineJoin
+  var strokeShapes = strokeShapes(
+    parseSomePath(path, false, transform.pixelScale()),
+    strokeWidth,
+    lineCap,
+    lineJoin,
+    miterLimit,
+    dashes
   )
-  image.fillShapes(strokeShapes, color, wrNonZero, blendMode)
+  strokeShapes.transform(transform)
+  mask.fillShapes(strokeShapes, wrNonZero, blendMode)
 
 proc strokePath*(
   image: Image,
   path: SomePath,
-  color: SomeColor,
-  transform: Vec2 | Mat3,
+  paint: Paint,
+  transform: Vec2 | Mat3 = vec2(),
   strokeWidth = 1.0,
   lineCap = lcButt,
   lineJoin = ljMiter,
-  blendMode = bmNormal
+  miterLimit = defaultMiterLimit,
+  dashes: seq[float32] = @[]
 ) =
   ## Strokes a path.
-  when type(transform) is Mat3:
-    let pixelScale = transform.maxScale()
-  else:
-    let pixelScale = 1.0
-  var strokeShapes = strokeShapes(
-    parseSomePath(path, pixelScale), strokeWidth, lineCap, lineJoin
-  )
-  for shape in strokeShapes.mitems:
-    for segment in shape.mitems:
-      when type(transform) is Vec2:
-        segment += transform
-      else:
-        segment = transform * segment
-  image.fillShapes(strokeShapes, color, wrNonZero, blendMode)
+  if paint.kind == pkSolid:
+    if paint.color.a > 0 or paint.blendMode == bmOverwrite:
+      var strokeShapes = strokeShapes(
+        parseSomePath(path, false, transform.pixelScale()),
+        strokeWidth,
+        lineCap,
+        lineJoin,
+        miterLimit,
+        dashes
+      )
+      strokeShapes.transform(transform)
+      image.fillShapes(strokeShapes, paint.color, wrNonZero, paint.blendMode)
+    return
 
-proc strokePath*(
-  mask: Mask,
-  path: SomePath,
-  strokeWidth = 1.0,
-  lineCap = lcButt,
-  lineJoin = ljMiter
-) =
-  ## Strokes a path.
-  let strokeShapes = strokeShapes(
-    parseSomePath(path), strokeWidth, lineCap, lineJoin
-  )
-  mask.fillShapes(strokeShapes, wrNonZero)
+  let
+    mask = newMask(image.width, image.height)
+    fill = newImage(image.width, image.height)
 
-proc strokePath*(
-  mask: Mask,
-  path: SomePath,
-  transform: Vec2 | Mat3,
-  strokeWidth = 1.0,
-  lineCap = lcButt,
-  lineJoin = ljMiter
-) =
-  ## Strokes a path.
-  when type(transform) is Mat3:
-    let pixelScale = transform.maxScale()
-  else:
-    let pixelScale = 1.0
-  var strokeShapes = strokeShapes(
-    parseSomePath(path, pixelScale), strokeWidth, lineCap, lineJoin
+  mask.strokePath(
+    path,
+    transform,
+    strokeWidth,
+    lineCap,
+    lineJoin,
+    miterLimit,
+    dashes
   )
-  for shape in strokeShapes.mitems:
-    for segment in shape.mitems:
-      when type(transform) is Vec2:
-        segment += transform
-      else:
-        segment = transform * segment
-  mask.fillShapes(strokeShapes, wrNonZero)
+
+  case paint.kind:
+    of pkSolid:
+      discard # Handled above
+    of pkImage:
+      fill.draw(paint.image, paint.imageMat)
+    of pkImageTiled:
+      fill.drawTiled(paint.image, paint.imageMat)
+    of pkGradientLinear:
+      fill.fillGradientLinear(paint)
+    of pkGradientRadial:
+      fill.fillGradientRadial(paint)
+    of pkGradientAngular:
+      fill.fillGradientAngular(paint)
+
+  fill.draw(mask)
+  image.draw(fill, blendMode = paint.blendMode)
 
 when defined(release):
   {.pop.}

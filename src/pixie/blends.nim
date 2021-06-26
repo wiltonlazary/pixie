@@ -32,7 +32,6 @@ type
     bmMask         ## Special blend mode that is used for masking
     bmOverwrite    ## Special blend mode that just copies pixels
     bmSubtractMask ## Inverse mask
-    bmIntersectMask
     bmExcludeMask
 
   Blender* = proc(backdrop, source: ColorRGBX): ColorRGBX
@@ -436,14 +435,11 @@ proc blendSubtractMask(backdrop, source: ColorRGBX): ColorRGBX =
   result.b = ((backdrop.b * a) div 255).uint8
   result.a = a.uint8
 
-proc blendIntersectMask(backdrop, source: ColorRGBX): ColorRGBX =
-  blendMask(backdrop, source)
-
 proc blendExcludeMask(backdrop, source: ColorRGBX): ColorRGBX =
   let a = max(backdrop.a, source.a).uint32 - min(backdrop.a, source.a)
-  result.r = ((backdrop.r * a) div 255).uint8
-  result.g = ((backdrop.g * a) div 255).uint8
-  result.b = ((backdrop.b * a) div 255).uint8
+  result.r = ((source.r * a) div 255).uint8
+  result.g = ((source.g * a) div 255).uint8
+  result.b = ((source.b * a) div 255).uint8
   result.a = a.uint8
 
 proc blendOverwrite(backdrop, source: ColorRGBX): ColorRGBX =
@@ -477,7 +473,6 @@ proc blender*(blendMode: BlendMode): Blender =
   of bmMask: blendMask
   of bmOverwrite: blendOverwrite
   of bmSubtractMask: blendSubtractMask
-  of bmIntersectMask: blendIntersectMask
   of bmExcludeMask: blendExcludeMask
 
 proc maskNormal(backdrop, source: uint8): uint8 =
@@ -490,9 +485,6 @@ proc maskMask(backdrop, source: uint8): uint8 =
 
 proc maskSubtract(backdrop, source: uint8): uint8 =
   ((backdrop.uint32 * (255 - source)) div 255).uint8
-
-proc maskIntersect(backdrop, source: uint8): uint8 =
-  maskMask(backdrop, source)
 
 proc maskExclude(backdrop, source: uint8): uint8 =
   max(backdrop, source) - min(backdrop, source)
@@ -507,7 +499,6 @@ proc masker*(blendMode: BlendMode): Masker =
   of bmMask: maskMask
   of bmOverwrite: maskOverwrite
   of bmSubtractMask: maskSubtract
-  of bmIntersectMask: maskIntersect
   of bmExcludeMask: maskExclude
   else:
     raise newException(PixieError, "No masker for " & $blendMode)
@@ -595,7 +586,7 @@ when defined(amd64) and not defined(pixieNoSimd):
       div255 = mm_set1_epi16(cast[int16](0x8081))
 
     var
-      sourceEven = mm_slli_epi16(mm_andnot_si128(oddMask, source), 8)
+      sourceEven = mm_slli_epi16(source, 8)
       sourceOdd = mm_and_si128(source, oddMask)
 
     let
@@ -603,7 +594,7 @@ when defined(amd64) and not defined(pixieNoSimd):
       oddK = mm_sub_epi16(v255high, sourceOdd)
 
     var
-      backdropEven = mm_slli_epi16(mm_andnot_si128(oddMask, backdrop), 8)
+      backdropEven = mm_slli_epi16(backdrop, 8)
       backdropOdd = mm_and_si128(backdrop, oddMask)
 
     # backdrop * k
@@ -628,11 +619,11 @@ when defined(amd64) and not defined(pixieNoSimd):
     let
       oddMask = mm_set1_epi16(cast[int16](0xff00))
       div255 = mm_set1_epi16(cast[int16](0x8081))
-      sourceEven = mm_slli_epi16(mm_andnot_si128(oddMask, source), 8)
+      sourceEven = mm_slli_epi16(source, 8)
       sourceOdd = mm_and_si128(source, oddMask)
 
     var
-      backdropEven = mm_slli_epi16(mm_andnot_si128(oddMask, backdrop), 8)
+      backdropEven = mm_slli_epi16(backdrop, 8)
       backdropOdd = mm_and_si128(backdrop, oddMask)
 
     # backdrop * source
