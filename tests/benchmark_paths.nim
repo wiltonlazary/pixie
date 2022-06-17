@@ -5,14 +5,96 @@ let pathStr = "m57.611-8.591c-1.487,1.851-4.899,4.42-1.982,6.348,0.194,0.129,0.5
 timeIt "parsePath":
   keep parsePath(pathStr)
 
-let image = newImage(500, 300)
-image.fill(rgba(255, 255, 255, 255))
+block:
+  let path = parsePath("""
+    M 10,30
+    A 20,20 0,0,1 50,30
+    A 20,20 0,0,1 90,30
+    Q 90,60 50,90
+    Q 10,60 10,30 z
+  """)
+  timeIt "fillOverlaps":
+    doAssert path.fillOverlaps(vec2(1, 1)) == false
 
-timeIt "roundedRect":
-  const radius = 20
+const
+  width = 500
+  height = 300
+  radius = 20
 
-  var path: Path
-  path.roundedRect(0.5, 0.5, 499, 299, radius, radius, radius, radius)
-  # path.roundedRect(0, 0, 500, 300, radius, radius, radius, radius)
+let paint = newPaint(SolidPaint)
+paint.color = color(0, 0, 0, 0.5)
 
-  image.fillPath(path, rgba(0, 0, 0, 255))
+let rect = newPath()
+rect.rect(10, 10, 480, 280)
+
+let roundedRect = newPath()
+roundedRect.roundedRect(10.5, 10.5, 479, 279, radius, radius, radius, radius)
+# roundedRect.roundedRect(10, 10, 480, 280, radius, radius, radius, radius)
+
+block:
+  let image = newImage(width, height)
+
+  timeIt "rect Image OverwriteBlend":
+    paint.blendMode = OverwriteBlend
+    image.fillPath(rect, paint)
+
+  timeIt "rect Image NormalBlend":
+    paint.blendMode = NormalBlend
+    image.fillPath(rect, paint)
+
+  timeIt "rect Image MaskBlend":
+    paint.blendMode = MaskBlend
+    image.fill(rgbx(255, 255, 255, 255))
+    image.fillPath(rect, paint)
+
+  timeIt "roundedRect Image OverwriteBlend":
+    paint.blendMode = OverwriteBlend
+    image.fillPath(roundedRect, paint)
+
+  timeIt "roundedRect Image NormalBlend":
+    paint.blendMode = NormalBlend
+    image.fillPath(roundedRect, paint)
+
+  timeIt "roundedRect Image MaskBlend":
+    paint.blendMode = MaskBlend
+    image.fill(rgbx(255, 255, 255, 255))
+    image.fillPath(roundedRect, paint)
+
+block:
+  let mask = newMask(width, height)
+
+  timeIt "rect Mask OverwriteBlend":
+    mask.fillPath(rect, blendMode = OverwriteBlend)
+
+  timeIt "rect Mask NormalBlend":
+    mask.fillPath(rect, blendMode = NormalBlend)
+
+  timeIt "rect Mask MaskBlend":
+    mask.fill(255)
+    mask.fillPath(rect, blendMode = MaskBlend)
+
+  timeIt "rect Mask SubtractMaskBlend":
+    mask.fill(255)
+    mask.fillPath(rect, blendMode = SubtractMaskBlend)
+
+  timeIt "rect Mask ExcludeMaskBlend":
+    mask.fill(255)
+    mask.fillPath(rect, blendMode = ExcludeMaskBlend)
+
+  timeIt "roundedRect Mask OverwriteBlend":
+    mask.fillPath(roundedRect, blendMode = OverwriteBlend)
+
+  timeIt "roundedRect Mask NormalBlend":
+    mask.fillPath(roundedRect, blendMode = NormalBlend)
+
+  timeIt "roundedRect Mask MaskBlend":
+    mask.fill(255)
+    mask.fillPath(roundedRect, blendMode = MaskBlend)
+
+  timeIt "roundedRect Mask SubtractMaskBlend":
+    mask.fill(255)
+    mask.fillPath(roundedRect, blendMode = SubtractMaskBlend)
+
+  timeIt "roundedRect Mask ExcludeMaskBlend":
+    mask.fill(255)
+    mask.fillPath(roundedRect, blendMode = ExcludeMaskBlend)

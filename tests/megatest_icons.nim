@@ -38,7 +38,7 @@ proc renderIconSet(index: int) =
   for filePath in walkFiles(iconSet.path):
     let
       (_, name, _) = splitFile(filePath)
-      image = decodeSvg(readFile(filePath), width, height)
+      image = newImage(parseSvg(readFile(filePath), width, height))
 
     images.add((name, image))
 
@@ -49,14 +49,16 @@ proc renderIconSet(index: int) =
 
   for i in 0 ..< rows:
     for j in 0 ..< max(images.len - i * columns, 0):
-      let (_, icon) = images[i * columns + j]
+      let
+        (_, icon) = images[i * columns + j]
+        pos = vec2(((width + 4) * j + 2).float32, ((height + 4) * i + 2).float32)
       rendered.draw(
         icon,
-        vec2(((width + 4) * j + 2).float32, ((height + 4) * i + 2).float32),
-        bmOverwrite
+        translate(pos),
+        OverwriteBlend
       )
 
-  rendered.writeFile(&"tests/images/svg/{iconSet.name}.png")
+  rendered.writeFile(&"tests/fileformats/svg/{iconSet.name}.png")
 
 proc main(index = -1) =
   if index >= 0:

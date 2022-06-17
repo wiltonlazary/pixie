@@ -13,6 +13,12 @@ timeIt "minifyBy2":
 
 reset()
 
+timeIt "magnifyBy2":
+  let magnified = mask.magnifyBy2()
+  doAssert magnified[0, 0] == 63
+
+reset()
+
 timeIt "invert":
   mask.invert()
 
@@ -34,7 +40,7 @@ timeIt "ceil":
 reset()
 
 block spread_1:
-  var p: Path
+  let p = newPath()
   p.rect(500, 500, 500, 500)
 
   timeIt "spread_1":
@@ -43,7 +49,7 @@ block spread_1:
     mask.spread(10)
 
 block spread_2:
-  var p: Path
+  let p = newPath()
   p.rect(500, 500, 1000, 1000)
 
   timeIt "spread_2":
@@ -59,5 +65,5 @@ block spread_3:
 block spread_4:
   timeIt "spread_4":
     mask.fill(0)
-    mask.setValueUnsafe(1000, 1000, 255)
+    mask.unsafe[1000, 1000] = 255
     mask.spread(10)

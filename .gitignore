@@ -10,3 +10,9 @@ nimcache
 *.ilk
 .*
 *.dll
+__pycache__
+bindings/generated
+*.dSYM
+dump.txt
+tests/fileformats/jpeg/generated
+tests/fileformats/jpeg/diffs

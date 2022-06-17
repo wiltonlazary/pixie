@@ -1,5 +1,7 @@
 <img src="docs/banner.png">
 
+👏 👏 👏 Check out video about the library: [A full-featured 2D graphics library for Nim (NimConf 2021)](https://www.youtube.com/watch?v=8acDfUIwLnk) 👏 👏 👏
+
 # Pixie - A full-featured 2D graphics library for Nim
 
 Pixie is a 2D graphics library similar to [Cairo](https://www.cairographics.org/) and [Skia](https://skia.org) written (almost) entirely in Nim.
@@ -9,6 +11,8 @@ This library is being actively developed and we'd be happy for you to use it.
 `nimble install pixie`
 
 ![Github Actions](https://github.com/treeform/pixie/workflows/Github%20Actions/badge.svg)
+
+[API reference](https://nimdocs.com/treeform/pixie)
 
 Features:
 * Typesetting and rasterizing text, including styled rich text via spans.
@@ -21,10 +25,6 @@ Features:
 * Complex blends: Darken, Multiply, Color Dodge, Hue, Luminosity... etc.
 * Many operations are SIMD accelerated.
 
-### Documentation
-
-API reference: https://nimdocs.com/treeform/pixie/pixie.html
-
 ### Image file formats
 
 Format        | Read          | Write         |
@@ -32,8 +32,10 @@ Format        | Read          | Write         |
 PNG           | ✅           | ✅            |
 JPEG          | ✅           |               |
 BMP           | ✅           | ✅            |
+QOI           | ✅           | ✅            |
 GIF           | ✅           |               |
 SVG           | ✅           |               |
+PPM           | ✅           | ✅            |
 
 ### Font file formats
 
@@ -95,14 +97,9 @@ Q q T t       | ✅            | quadratic to          |
 A a           | ✅            | arc to                |
 z             | ✅            | close path            |
 
-### Realtime Examples
+### Pixie + GPU
 
-Here are some examples of using Pixie for realtime rendering with some popular windowing libraries:
-
-* [examples/realtime_glfw.nim](examples/realtime_glfw.nim)
-* [examples/realtime_glut.nim](examples/realtime_glut.nim)
-* [examples/realtime_sdl.nim](examples/realtime_sdl.nim)
-* [examples/realtime_win32.nim](examples/realtime_win32.nim)
+To learn how to use Pixie for realtime graphics with GPU, check out [Boxy](https://github.com/treeform/boxy).
 
 ## Testing
 
@@ -110,42 +107,45 @@ Here are some examples of using Pixie for realtime rendering with some popular w
 
 ## Examples
 
+`git clone https://github.com/treeform/pixie` to run examples.
+
 ### Text
-[examples/text.nim](examples/text.nim)
+nim c -r [examples/text.nim](examples/text.nim)
 ```nim
-var font = readFont("tests/fonts/Roboto-Regular_1.ttf")
+var font = readFont("examples/data/Roboto-Regular_1.ttf")
 font.size = 20
 
 let text = "Typesetting is the arrangement and composition of text in graphic design and publishing in both digital and traditional medias."
 
-image.fillText(font.typeset(text, bounds = vec2(180, 180)), vec2(10, 10))
+image.fillText(font.typeset(text, vec2(180, 180)), translate(vec2(10, 10)))
 ```
 ![example output](examples/text.png)
 
 ### Text spans
-[examples/text_spans.nim](examples/text_spans.nim)
+nim c -r [examples/text_spans.nim](examples/text_spans.nim)
 ```nim
-let font = readFont("tests/fonts/Ubuntu-Regular_1.ttf")
+let typeface = readTypeface("examples/data/Ubuntu-Regular_1.ttf")
 
-proc style(font: Font, size: float32, color: ColorRGBA): Font =
-  result = font
+proc newFont(typeface: Typeface, size: float32, color: Color): Font =
+  result = newFont(typeface)
   result.size = size
   result.paint.color = color
 
 let spans = @[
-  newSpan("verb [with object] ", font.style(12, rgba(200, 200, 200, 255))),
-  newSpan("strallow\n", font.style(36, rgba(0, 0, 0, 255))),
-  newSpan("\nstral·low\n", font.style(13, rgba(0, 127, 244, 255))),
+  newSpan("verb [with object] ",
+    newFont(typeface, 12, color(0.78125, 0.78125, 0.78125, 1))),
+  newSpan("strallow\n", newFont(typeface, 36, color(0, 0, 0, 1))),
+  newSpan("\nstral·low\n", newFont(typeface, 13, color(0, 0.5, 0.953125, 1))),
   newSpan("\n1. free (something) from restrictive restrictions \"the regulations are intended to strallow changes in public policy\" ",
-      font.style(14, rgba(80, 80, 80, 255)))
+      newFont(typeface, 14, color(0.3125, 0.3125, 0.3125, 1)))
 ]
 
-image.fillText(typeset(spans, bounds = vec2(180, 180)), vec2(10, 10))
+image.fillText(typeset(spans, vec2(180, 180)), translate(vec2(10, 10)))
 ```
 ![example output](examples/text_spans.png)
 
 ### Square
-[examples/square.nim](examples/square.nim)
+nim c -r [examples/square.nim](examples/square.nim)
 ```nim
 let ctx = newContext(image)
 ctx.fillStyle = rgba(255, 0, 0, 255)
@@ -159,7 +159,7 @@ ctx.fillRect(rect(pos, wh))
 ![example output](examples/square.png)
 
 ### Line
-[examples/line.nim](examples/line.nim)
+nim c -r [examples/line.nim](examples/line.nim)
 ```nim
 let ctx = newContext(image)
 ctx.strokeStyle = "#FF5C00"
@@ -174,7 +174,7 @@ ctx.strokeSegment(segment(start, stop))
 ![example output](examples/line.png)
 
 ### Rounded rectangle
-[examples/rounded_rectangle.nim](examples/rounded_rectangle.nim)
+nim c -r [examples/rounded_rectangle.nim](examples/rounded_rectangle.nim)
 ```nim
 let ctx = newContext(image)
 ctx.fillStyle = rgba(0, 255, 0, 255)
@@ -189,7 +189,7 @@ ctx.fillRoundedRect(rect(pos, wh), r)
 ![example output](examples/rounded_rectangle.png)
 
 ### Heart
-[examples/heart.nim](examples/heart.nim)
+nim c -r [examples/heart.nim](examples/heart.nim)
 ```nim
 image.fillPath(
   """
@@ -206,7 +206,7 @@ image.fillPath(
 ![example output](examples/heart.png)
 
 ### Masking
-[examples/masking.nim](examples/masking.nim)
+nim c -r [examples/masking.nim](examples/masking.nim)
 ```nim
 let ctx = newContext(lines)
 ctx.strokeStyle = "#F8D1DD"
@@ -231,20 +231,18 @@ image.draw(lines)
 ![example output](examples/masking.png)
 
 ### Gradient
-[examples/gradient.nim](examples/gradient.nim)
+nim c -r [examples/gradient.nim](examples/gradient.nim)
 ```nim
-let paint = Paint(
-  kind: pkGradientRadial,
-  gradientHandlePositions: @[
-    vec2(100, 100),
-    vec2(200, 100),
-    vec2(100, 200)
-  ],
-  gradientStops: @[
-    ColorStop(color: rgba(255, 0, 0, 255), position: 0),
-    ColorStop(color: rgba(255, 0, 0, 40), position: 1.0),
-  ]
-)
+let paint = newPaint(RadialGradientPaint)
+paint.gradientHandlePositions = @[
+  vec2(100, 100),
+  vec2(200, 100),
+  vec2(100, 200)
+]
+paint.gradientStops = @[
+  ColorStop(color: color(1, 0, 0, 1), position: 0),
+  ColorStop(color: color(1, 0, 0, 0.15625), position: 1.0),
+]
 
 image.fillPath(
   """
@@ -261,38 +259,31 @@ image.fillPath(
 ![example output](examples/gradient.png)
 
 ### Image tiled
-[examples/image_tiled.nim](examples/image_tiled.nim)
+nim c -r [examples/image_tiled.nim](examples/image_tiled.nim)
 ```nim
-var path: Path
+let path = newPath()
 path.polygon(
   vec2(100, 100),
   70,
   sides = 8
 )
-image.fillPath(
-  path,
-  Paint(
-    kind: pkImageTiled,
-    image: readImage("tests/images/png/baboon.png"),
-    imageMat: scale(vec2(0.08, 0.08))
-  )
-)
+
+let paint = newPaint(TiledImagePaint)
+paint.image = readImage("examples/data/mandrill.png")
+paint.imageMat = scale(vec2(0.08, 0.08))
+
+image.fillPath(path, paint)
 ```
 ![example output](examples/image_tiled.png)
 
 ### Shadow
-[examples/shadow.nim](examples/shadow.nim)
+nim c -r [examples/shadow.nim](examples/shadow.nim)
 ```nim
+let path = newPath()
+path.polygon(vec2(100, 100), 70, sides = 8)
+
 let polygonImage = newImage(200, 200)
-
-let ctx = newContext(polygonImage)
-ctx.fillStyle = rgba(255, 255, 255, 255)
-
-ctx.fillPolygon(
-  vec2(100, 100),
-  70,
-  sides = 8
-)
+polygonImage.fillPath(path, rgba(255, 255, 255, 255))
 
 let shadow = polygonImage.shadow(
   offset = vec2(2, 2),
@@ -307,13 +298,16 @@ image.draw(polygonImage)
 ![example output](examples/shadow.png)
 
 ### Blur
-[examples/blur.nim](examples/blur.nim)
+nim c -r [examples/blur.nim](examples/blur.nim)
 ```nim
+let path = newPath()
+path.polygon(vec2(100, 100), 70, sides = 6)
+
 let mask = newMask(200, 200)
-mask.fillPolygon(vec2(100, 100), 70, sides = 6)
+mask.fillPath(path)
 
 blur.blur(20)
-blur.draw(mask, blendMode = bmMask)
+blur.draw(mask, blendMode = MaskBlend)
 
 image.draw(trees)
 image.draw(blur)
@@ -321,7 +315,7 @@ image.draw(blur)
 ![example output](examples/blur.png)
 
 ### Tiger
-[examples/tiger.nim](examples/tiger.nim)
+nim c -r [examples/tiger.nim](examples/tiger.nim)
 ```nim
 let tiger = readImage("examples/data/tiger.svg")
 

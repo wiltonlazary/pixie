@@ -1,6 +1,6 @@
-import blends, bumpy, chroma, common, masks, pixie/internal, system/memory, vmath
+import blends, bumpy, chroma, common, masks, pixie/internal, vmath
 
-when defined(amd64) and not defined(pixieNoSimd):
+when defined(amd64) and allowSimd:
   import nimsimd/sse2
 
 const h = 0.5.float32
@@ -11,10 +11,12 @@ type
     width*, height*: int
     data*: seq[ColorRGBX]
 
+  UnsafeImage = distinct Image
+
 when defined(release):
   {.push checks: off.}
 
-proc newImage*(width, height: int): Image =
+proc newImage*(width, height: int): Image {.raises: [PixieError].} =
   ## Creates a new image with the parameter dimensions.
   if width <= 0 or height <= 0:
     raise newException(PixieError, "Image width and height must be > 0")
@@ -24,126 +26,163 @@ proc newImage*(width, height: int): Image =
   result.height = height
   result.data = newSeq[ColorRGBX](width * height)
 
-proc newImage*(mask: Mask): Image =
+proc newImage*(mask: Mask): Image {.raises: [PixieError].} =
   result = newImage(mask.width, mask.height)
   var i: int
-  when defined(amd64) and not defined(pixieNoSimd):
-    for _ in countup(0, mask.data.len - 16, 4):
-      let values = mm_loadu_si128(mask.data[i].addr)
-      var alphas = unpackAlphaValues(values)
-      alphas = mm_or_si128(alphas, mm_srli_epi32(alphas, 8))
-      alphas = mm_or_si128(alphas, mm_srli_epi32(alphas, 16))
-      mm_storeu_si128(result.data[i].addr, alphas)
-      i += 4
+  when defined(amd64) and allowSimd:
+    for _ in 0 ..< mask.data.len div 16:
+      var alphas = mm_loadu_si128(mask.data[i].addr)
+      for j in 0 ..< 4:
+        var unpacked = unpackAlphaValues(alphas)
+        unpacked = mm_or_si128(unpacked, mm_srli_epi32(unpacked, 8))
+        unpacked = mm_or_si128(unpacked, mm_srli_epi32(unpacked, 16))
+        mm_storeu_si128(result.data[i + j * 4].addr, unpacked)
+        alphas = mm_srli_si128(alphas, 4)
+      i += 16
 
-  for i in i ..< mask.data.len:
-    let v = mask.data[i]
-    result.data[i] = rgbx(v, v, v, v)
+  for j in i ..< mask.data.len:
+    let v = mask.data[j]
+    result.data[j] = rgbx(v, v, v, v)
 
-proc wh*(image: Image): Vec2 {.inline.} =
-  ## Return with and height as a size vector.
-  vec2(image.width.float32, image.height.float32)
-
-proc copy*(image: Image): Image =
+proc copy*(image: Image): Image {.raises: [PixieError].} =
   ## Copies the image data into a new image.
   result = newImage(image.width, image.height)
   result.data = image.data
 
-proc `$`*(image: Image): string =
+proc `$`*(image: Image): string {.raises: [].} =
   ## Prints the image size.
   "<Image " & $image.width & "x" & $image.height & ">"
 
-proc inside*(image: Image, x, y: int): bool {.inline.} =
+proc inside*(image: Image, x, y: int): bool {.inline, raises: [].} =
   ## Returns true if (x, y) is inside the image.
   x >= 0 and x < image.width and y >= 0 and y < image.height
 
-proc dataIndex*(image: Image, x, y: int): int {.inline.} =
+proc dataIndex*(image: Image, x, y: int): int {.inline, raises: [].} =
   image.width * y + x
 
-proc getRgbaUnsafe*(image: Image, x, y: int): ColorRGBX {.inline.} =
+template unsafe*(src: Image): UnsafeImage =
+  cast[UnsafeImage](src)
+
+template `[]`*(view: UnsafeImage, x, y: int): var ColorRGBX =
   ## Gets a color from (x, y) coordinates.
   ## * No bounds checking *
   ## Make sure that x, y are in bounds.
-  ## Failure in the assumptions will case unsafe memory reads.
-  result = image.data[image.width * y + x]
+  ## Failure in the assumptions will cause unsafe memory reads.
+  cast[Image](view).data[cast[Image](view).dataIndex(x, y)]
 
-proc `[]`*(image: Image, x, y: int): ColorRGBX {.inline.} =
-  ## Gets a pixel at (x, y) or returns transparent black if outside of bounds.
-  if image.inside(x, y):
-    return image.getRgbaUnsafe(x, y)
-
-proc setRgbaUnsafe*(image: Image, x, y: int, color: SomeColor) {.inline.} =
+template `[]=`*(view: UnsafeImage, x, y: int, color: ColorRGBX) =
   ## Sets a color from (x, y) coordinates.
   ## * No bounds checking *
   ## Make sure that x, y are in bounds.
-  ## Failure in the assumptions will case unsafe memory writes.
-  image.data[image.dataIndex(x, y)] = color.asRgbx()
+  ## Failure in the assumptions will cause unsafe memory writes.
+  cast[Image](view).data[cast[Image](view).dataIndex(x, y)] = color
 
-proc `[]=`*(image: Image, x, y: int, color: SomeColor) {.inline.} =
+proc `[]`*(image: Image, x, y: int): ColorRGBX {.inline, raises: [].} =
+  ## Gets a pixel at (x, y) or returns transparent black if outside of bounds.
+  if image.inside(x, y):
+    return image.unsafe[x, y]
+
+proc `[]=`*(image: Image, x, y: int, color: SomeColor) {.inline, raises: [].} =
   ## Sets a pixel at (x, y) or does nothing if outside of bounds.
   if image.inside(x, y):
-    image.setRgbaUnsafe(x, y, color.asRgbx())
+    image.unsafe[x, y] = color.asRgbx()
 
-proc fillUnsafe*(data: var seq[ColorRGBX], color: SomeColor, start, len: int) =
-  ## Fills the image data with the parameter color starting at index start and
-  ## continuing for len indices.
+proc getColor*(image: Image, x, y: int): Color {.inline, raises: [].} =
+  ## Gets a color at (x, y) or returns transparent black if outside of bounds.
+  image[x, y].color()
 
-  let rgbx = color.asRgbx()
+proc setColor*(image: Image, x, y: int, color: Color) {.inline, raises: [].} =
+  ## Sets a color at (x, y) or does nothing if outside of bounds.
+  image[x, y] = color.rgbx()
 
-  # Use memset when every byte has the same value
-  if rgbx.r == rgbx.g and rgbx.r == rgbx.b and rgbx.r == rgbx.a:
-    nimSetMem(data[start].addr, rgbx.r.cint, len * 4)
-  else:
-    var i = start
-    when defined(amd64) and not defined(pixieNoSimd):
-      # When supported, SIMD fill until we run out of room
-      let m = mm_set1_epi32(cast[int32](rgbx))
-      for j in countup(i, start + len - 8, 8):
-        mm_storeu_si128(data[j].addr, m)
-        mm_storeu_si128(data[j + 4].addr, m)
-        i += 8
-    else:
-      when sizeof(int) == 8:
-        # Fill 8 bytes at a time when possible
-        let
-          u32 = cast[uint32](rgbx)
-          u64 = cast[uint64]([u32, u32])
-        for j in countup(i, start + len - 2, 2):
-          cast[ptr uint64](data[j].addr)[] = u64
-          i += 2
-    # Fill whatever is left the slow way
-    for j in i ..< start + len:
-      data[j] = rgbx
-
-proc fill*(image: Image, color: SomeColor) {.inline.} =
-  ## Fills the image with the parameter color.
+proc fill*(image: Image, color: SomeColor) {.inline, raises: [].} =
+  ## Fills the image with the color.
   fillUnsafe(image.data, color, 0, image.data.len)
 
-proc flipHorizontal*(image: Image) =
+proc isOneColor*(image: Image): bool {.raises: [].} =
+  ## Checks if the entire image is the same color.
+  result = true
+
+  let color = image.data[0]
+
+  var i: int
+  when defined(amd64) and allowSimd:
+    let colorVec = mm_set1_epi32(cast[int32](color))
+    for _ in 0 ..< image.data.len div 8:
+      let
+        values0 = mm_loadu_si128(image.data[i + 0].addr)
+        values1 = mm_loadu_si128(image.data[i + 4].addr)
+        mask0 = mm_movemask_epi8(mm_cmpeq_epi8(values0, colorVec))
+        mask1 = mm_movemask_epi8(mm_cmpeq_epi8(values1, colorVec))
+      if mask0 != 0xffff or mask1 != 0xffff:
+        return false
+      i += 8
+
+  for j in i ..< image.data.len:
+    if image.data[j] != color:
+      return false
+
+proc isTransparent*(image: Image): bool {.raises: [].} =
+  ## Checks if this image is fully transparent or not.
+  result = true
+
+  var i: int
+  when defined(amd64) and allowSimd:
+    let vecZero = mm_setzero_si128()
+    for _ in 0 ..< image.data.len div 16:
+      let
+        values0 = mm_loadu_si128(image.data[i + 0].addr)
+        values1 = mm_loadu_si128(image.data[i + 4].addr)
+        values2 = mm_loadu_si128(image.data[i + 8].addr)
+        values3 = mm_loadu_si128(image.data[i + 12].addr)
+        values01 = mm_or_si128(values0, values1)
+        values23 = mm_or_si128(values2, values3)
+        values = mm_or_si128(values01, values23)
+      if mm_movemask_epi8(mm_cmpeq_epi8(values, vecZero)) != 0xffff:
+        return false
+      i += 16
+
+  for j in i ..< image.data.len:
+    if image.data[j].a != 0:
+      return false
+
+proc isOpaque*(image: Image): bool {.raises: [].} =
+  ## Checks if the entire image is opaque (alpha values are all 255).
+  isOpaque(image.data, 0, image.data.len)
+
+proc flipHorizontal*(image: Image) {.raises: [].} =
   ## Flips the image around the Y axis.
   let w = image.width div 2
   for y in 0 ..< image.height:
     for x in 0 ..< w:
-      let
-        rgba1 = image.getRgbaUnsafe(x, y)
-        rgba2 = image.getRgbaUnsafe(image.width - x - 1, y)
-      image.setRgbaUnsafe(image.width - x - 1, y, rgba1)
-      image.setRgbaUnsafe(x, y, rgba2)
+      swap(
+        image.data[image.dataIndex(x, y)],
+        image.data[image.dataIndex(image.width - x - 1, y)]
+      )
 
-proc flipVertical*(image: Image) =
+proc flipVertical*(image: Image) {.raises: [].} =
   ## Flips the image around the X axis.
   let h = image.height div 2
   for y in 0 ..< h:
     for x in 0 ..< image.width:
-      let
-        rgba1 = image.getRgbaUnsafe(x, y)
-        rgba2 = image.getRgbaUnsafe(x, image.height - y - 1)
-      image.setRgbaUnsafe(x, image.height - y - 1, rgba1)
-      image.setRgbaUnsafe(x, y, rgba2)
+      swap(
+        image.data[image.dataIndex(x, y)],
+        image.data[image.dataIndex(x, image.height - y - 1)]
+      )
 
-proc subImage*(image: Image, x, y, w, h: int): Image =
+proc rotate90*(image: Image) {.raises: [PixieError].} =
+  ## Rotates the image 90 degrees clockwise.
+  let rotated = newImage(image.height, image.width)
+  for y in 0 ..< rotated.height:
+    for x in 0 ..< rotated.width:
+      rotated.data[rotated.dataIndex(x, y)] =
+        image.data[image.dataIndex(y, image.height - x - 1)]
+  image.width = rotated.width
+  image.height = rotated.height
+  image.data = move rotated.data
+
+proc subImage*(image: Image, x, y, w, h: int): Image {.raises: [PixieError].} =
   ## Gets a sub image from this image.
-
   if x < 0 or x + w > image.width:
     raise newException(
       PixieError,
@@ -163,31 +202,7 @@ proc subImage*(image: Image, x, y, w, h: int): Image =
       w * 4
     )
 
-proc superImage*(image: Image, x, y, w, h: int): Image =
-  ## Either cuts a sub image or returns a super image with padded transparency.
-  if x >= 0 and x + w <= image.width and y >= 0 and y + h <= image.height:
-    result = image.subImage(x, y, w, h)
-  elif abs(x) >= image.width or abs(y) >= image.height:
-    # Nothing to copy, just an empty new image
-    result = newImage(w, h)
-  else:
-    let
-      readOffsetX = max(x, 0)
-      readOffsetY = max(y, 0)
-      writeOffsetX = max(0 - x, 0)
-      writeOffsetY = max(0 - y, 0)
-      copyWidth = max(min(image.width, w) - abs(x), 0)
-      copyHeight = max(min(image.height, h) - abs(y), 0)
-
-    result = newImage(w, h)
-    for y2 in 0 ..< copyHeight:
-      copyMem(
-        result.data[result.dataIndex(writeOffsetX, writeOffsetY + y2)].addr,
-        image.data[image.dataIndex(readOffsetX, readOffsetY + y2)].addr,
-        copyWidth * 4
-      )
-
-proc diff*(master, image: Image): (float32, Image) =
+proc diff*(master, image: Image): (float32, Image) {.raises: [PixieError].} =
   ## Compares the parameters and returns a score and image of the difference.
   let
     w = max(master.width, image.width)
@@ -208,7 +223,7 @@ proc diff*(master, image: Image): (float32, Image) =
       c.g = diff.clamp(0, 255).uint8
       c.b = (-diff).clamp(0, 255).uint8
       c.a = 255
-      diffImage.setRgbaUnsafe(x, y, c)
+      diffImage.unsafe[x, y] = c
       diffScore += abs(m.r.int - u.r.int) +
         abs(m.g.int - u.g.int) +
         abs(m.b.int - u.b.int) +
@@ -217,7 +232,7 @@ proc diff*(master, image: Image): (float32, Image) =
 
   (100 * diffScore.float32 / diffTotal.float32, diffImage)
 
-proc minifyBy2*(image: Image, power = 1): Image =
+proc minifyBy2*(image: Image, power = 1): Image {.raises: [PixieError].} =
   ## Scales the image down by an integer scale.
   if power < 0:
     raise newException(PixieError, "Cannot minifyBy2 with negative power")
@@ -226,14 +241,24 @@ proc minifyBy2*(image: Image, power = 1): Image =
 
   var src = image
   for _ in 1 .. power:
-    result = newImage(src.width div 2, src.height div 2)
-    for y in 0 ..< result.height:
+    # When minifying an image of odd size, round the result image size up
+    # so a 99 x 99 src image returns a 50 x 50 image.
+    let
+      srcWidthIsOdd = (src.width mod 2) != 0
+      srcHeightIsOdd = (src.height mod 2) != 0
+      resultEvenWidth = src.width div 2
+      resultEvenHeight = src.height div 2
+    result = newImage(
+      if srcWidthIsOdd: resultEvenWidth + 1 else: resultEvenWidth,
+      if srcHeightIsOdd: resultEvenHeight + 1 else: resultEvenHeight
+    )
+    for y in 0 ..< resultEvenHeight:
       var x: int
-      when defined(amd64) and not defined(pixieNoSimd):
+      when defined(amd64) and allowSimd:
         let
           oddMask = mm_set1_epi16(cast[int16](0xff00))
           first32 = cast[M128i]([uint32.high, 0, 0, 0])
-        for _ in countup(0, result.width - 4, 2):
+        for _ in countup(0, resultEvenWidth - 4, 2):
           let
             top = mm_loadu_si128(src.data[src.dataIndex(x * 2, y * 2 + 0)].addr)
             btm = mm_loadu_si128(src.data[src.dataIndex(x * 2, y * 2 + 1)].addr)
@@ -273,44 +298,91 @@ proc minifyBy2*(image: Image, power = 1): Image =
           mm_storeu_si128(result.data[result.dataIndex(x, y)].addr, zeroTwo)
           x += 2
 
-      for x in x ..< result.width:
+      for x in x ..< resultEvenWidth:
         let
-          a = src.getRgbaUnsafe(x * 2 + 0, y * 2 + 0)
-          b = src.getRgbaUnsafe(x * 2 + 1, y * 2 + 0)
-          c = src.getRgbaUnsafe(x * 2 + 1, y * 2 + 1)
-          d = src.getRgbaUnsafe(x * 2 + 0, y * 2 + 1)
+          a = src.unsafe[x * 2 + 0, y * 2 + 0]
+          b = src.unsafe[x * 2 + 1, y * 2 + 0]
+          c = src.unsafe[x * 2 + 1, y * 2 + 1]
+          d = src.unsafe[x * 2 + 0, y * 2 + 1]
+          mixed = rgbx(
+            ((a.r.uint32 + b.r + c.r + d.r) div 4).uint8,
+            ((a.g.uint32 + b.g + c.g + d.g) div 4).uint8,
+            ((a.b.uint32 + b.b + c.b + d.b) div 4).uint8,
+            ((a.a.uint32 + b.a + c.a + d.a) div 4).uint8
+          )
+        result.unsafe[x, y] = mixed
 
-        let color = rgbx(
-          ((a.r.uint32 + b.r + c.r + d.r) div 4).uint8,
-          ((a.g.uint32 + b.g + c.g + d.g) div 4).uint8,
-          ((a.b.uint32 + b.b + c.b + d.b) div 4).uint8,
-          ((a.a.uint32 + b.a + c.a + d.a) div 4).uint8
-        )
+      if srcWidthIsOdd:
+        let rgbx = mix(
+          src.unsafe[src.width - 1, y * 2 + 0],
+          src.unsafe[src.width - 1, y * 2 + 1],
+          0.5
+        ) * 0.5
+        result.unsafe[result.width - 1, y] = rgbx
 
-        result.setRgbaUnsafe(x, y, color)
+    if srcHeightIsOdd:
+      for x in 0 ..< resultEvenWidth:
+        let rgbx = mix(
+          src.unsafe[x * 2 + 0, src.height - 1],
+          src.unsafe[x * 2 + 1, src.height - 1],
+          0.5
+        ) * 0.5
+        result.unsafe[x, result.height - 1] = rgbx
+
+      if srcWidthIsOdd:
+        result.unsafe[result.width - 1, result.height - 1] =
+          src.unsafe[src.width - 1, src.height - 1] * 0.25
 
     # Set src as this result for if we do another power
     src = result
 
-proc magnifyBy2*(image: Image, power = 1): Image =
+proc magnifyBy2*(image: Image, power = 1): Image {.raises: [PixieError].} =
   ## Scales image up by 2 ^ power.
   if power < 0:
     raise newException(PixieError, "Cannot magnifyBy2 with negative power")
 
   let scale = 2 ^ power
   result = newImage(image.width * scale, image.height * scale)
-  for y in 0 ..< result.height:
-    for x in 0 ..< image.width:
-      let
-        rgba = image.getRgbaUnsafe(x, y div scale)
-        scaledX = x * scale
-        idx = result.dataIndex(scaledX, y)
-      for i in 0 ..< scale:
-        result.data[idx + i] = rgba
 
-proc applyOpacity*(target: Image | Mask, opacity: float32) =
+  for y in 0 ..< image.height:
+    # Write one row of pixels duplicated by scale
+    var x: int
+    when defined(amd64) and allowSimd:
+      if scale == 2:
+        while x <= image.width - 4:
+          let
+            values = mm_loadu_si128(image.data[image.dataIndex(x, y)].addr)
+            lo = mm_unpacklo_epi32(values, mm_setzero_si128())
+            hi = mm_unpackhi_epi32(values, mm_setzero_si128())
+          mm_storeu_si128(
+            result.data[result.dataIndex(x * scale + 0, y * scale)].addr,
+            mm_or_si128(lo, mm_slli_si128(lo, 4))
+          )
+          mm_storeu_si128(
+            result.data[result.dataIndex(x * scale + 4, y * scale)].addr,
+            mm_or_si128(hi, mm_slli_si128(hi, 4))
+          )
+          x += 4
+    for x in x ..< image.width:
+      let
+        rgbx = image.unsafe[x, y]
+        resultIdx = result.dataIndex(x * scale, y * scale)
+      for i in 0 ..< scale:
+        result.data[resultIdx + i] = rgbx
+    # Copy that row of pixels into (scale - 1) more rows
+    let rowStart = result.dataIndex(0, y * scale)
+    for i in 1 ..< scale:
+      copyMem(
+        result.data[rowStart + result.width * i].addr,
+        result.data[rowStart].addr,
+        result.width * 4
+      )
+
+proc applyOpacity*(target: Image | Mask, opacity: float32) {.raises: [].} =
   ## Multiplies alpha of the image by opacity.
   let opacity = round(255 * opacity).uint16
+  if opacity == 255:
+    return
 
   if opacity == 0:
     when type(target) is Image:
@@ -320,7 +392,7 @@ proc applyOpacity*(target: Image | Mask, opacity: float32) =
     return
 
   var i: int
-  when defined(amd64) and not defined(pixieNoSimd):
+  when defined(amd64) and allowSimd:
     when type(target) is Image:
       let byteLen = target.data.len * 4
     else:
@@ -329,25 +401,24 @@ proc applyOpacity*(target: Image | Mask, opacity: float32) =
     let
       oddMask = mm_set1_epi16(cast[int16](0xff00))
       div255 = mm_set1_epi16(cast[int16](0x8081))
-      vOpacity = mm_slli_epi16(mm_set1_epi16(cast[int16](opacity)), 8)
-
-    for _ in countup(0, byteLen - 16, 16):
+      zeroVec = mm_setzero_si128()
+      opacityVec = mm_slli_epi16(mm_set1_epi16(cast[int16](opacity)), 8)
+    for _ in 0 ..< byteLen div 16:
       when type(target) is Image:
         let index = i div 4
       else:
         let index = i
 
-      var values = mm_loadu_si128(target.data[index].addr)
+      let values = mm_loadu_si128(target.data[index].addr)
 
-      let eqZero = mm_cmpeq_epi16(values, mm_setzero_si128())
-      if mm_movemask_epi8(eqZero) != 0xffff:
+      if mm_movemask_epi8(mm_cmpeq_epi16(values, zeroVec)) != 0xffff:
         var
           valuesEven = mm_slli_epi16(mm_andnot_si128(oddMask, values), 8)
           valuesOdd = mm_and_si128(values, oddMask)
 
         # values * opacity
-        valuesEven = mm_mulhi_epu16(valuesEven, vOpacity)
-        valuesOdd = mm_mulhi_epu16(valuesOdd, vOpacity)
+        valuesEven = mm_mulhi_epu16(valuesEven, opacityVec)
+        valuesOdd = mm_mulhi_epu16(valuesOdd, opacityVec)
 
         # div 255
         valuesEven = mm_srli_epi16(mm_mulhi_epu16(valuesEven, div255), 7)
@@ -364,59 +435,45 @@ proc applyOpacity*(target: Image | Mask, opacity: float32) =
 
   when type(target) is Image:
     for j in i div 4 ..< target.data.len:
-      var rgba = target.data[j]
-      rgba.r = ((rgba.r * opacity) div 255).uint8
-      rgba.g = ((rgba.g * opacity) div 255).uint8
-      rgba.b = ((rgba.b * opacity) div 255).uint8
-      rgba.a = ((rgba.a * opacity) div 255).uint8
-      target.data[j] = rgba
+      var rgbx = target.data[j]
+      rgbx.r = ((rgbx.r * opacity) div 255).uint8
+      rgbx.g = ((rgbx.g * opacity) div 255).uint8
+      rgbx.b = ((rgbx.b * opacity) div 255).uint8
+      rgbx.a = ((rgbx.a * opacity) div 255).uint8
+      target.data[j] = rgbx
   else:
     for j in i ..< target.data.len:
       target.data[j] = ((target.data[j] * opacity) div 255).uint8
 
-proc invert*(target: Image | Mask) =
+proc invert*(target: Image) {.raises: [].} =
   ## Inverts all of the colors and alpha.
   var i: int
-  when defined(amd64) and not defined(pixieNoSimd):
-    let v255 = mm_set1_epi8(cast[int8](255))
-
-    when type(target) is Image:
-      let byteLen = target.data.len * 4
-    else:
-      let byteLen = target.data.len
-
-    for _ in countup(0, byteLen - 16, 16):
-      when type(target) is Image:
-        let index = i div 4
-      else:
-        let index = i
-
+  when defined(amd64) and allowSimd:
+    let vec255 = mm_set1_epi8(cast[int8](255))
+    let byteLen = target.data.len * 4
+    for _ in 0 ..< byteLen div 16:
+      let index = i div 4
       var values = mm_loadu_si128(target.data[index].addr)
-      values = mm_sub_epi8(v255, values)
+      values = mm_sub_epi8(vec255, values)
       mm_storeu_si128(target.data[index].addr, values)
-
       i += 16
 
-  when type(target) is Image:
-    for j in i div 4 ..< target.data.len:
-      var rgba = target.data[j]
-      rgba.r = 255 - rgba.r
-      rgba.g = 255 - rgba.g
-      rgba.b = 255 - rgba.b
-      rgba.a = 255 - rgba.a
-      target.data[j] = rgba
+  for j in i div 4 ..< target.data.len:
+    var rgba = target.data[j]
+    rgba.r = 255 - rgba.r
+    rgba.g = 255 - rgba.g
+    rgba.b = 255 - rgba.b
+    rgba.a = 255 - rgba.a
+    target.data[j] = rgba
 
-    # Inverting rgbx(50, 100, 150, 200) becomes rgbx(205, 155, 105, 55). This
-    # is not a valid premultiplied alpha color.
-    # We need to convert back to premultiplied alpha after inverting.
-    target.data.toPremultipliedAlpha()
-  else:
-    for j in i ..< target.data.len:
-      target.data[j] = (255 - target.data[j]).uint8
+  # Inverting rgbx(50, 100, 150, 200) becomes rgbx(205, 155, 105, 55). This
+  # is not a valid premultiplied alpha color.
+  # We need to convert back to premultiplied alpha after inverting.
+  target.data.toPremultipliedAlpha()
 
 proc blur*(
-  image: Image, radius: float32, outOfBounds: SomeColor = ColorRGBX()
-) =
+  image: Image, radius: float32, outOfBounds: SomeColor = color(0, 0, 0, 0)
+) {.raises: [PixieError].} =
   ## Applies Gaussian blur to the image given a radius.
   let radius = round(radius).int
   if radius == 0:
@@ -444,10 +501,10 @@ proc blur*(
 
   template rgbx(values: array[4, uint32]): ColorRGBX =
     rgbx(
-      (values[0] div 1024 div 255).uint8,
-      (values[1] div 1024 div 255).uint8,
-      (values[2] div 1024 div 255).uint8,
-      (values[3] div 1024 div 255).uint8
+      (values[0] div 256 div 255).uint8,
+      (values[1] div 256 div 255).uint8,
+      (values[2] div 256 div 255).uint8,
+      (values[3] div 256 div 255).uint8
     )
 
   # Blur in the X direction. Store with dimensions swapped for reading later.
@@ -457,14 +514,11 @@ proc blur*(
       var values: array[4, uint32]
       for xx in x - radius ..< min(x + radius, 0):
         values += outOfBounds * kernel[xx - x + radius]
-
       for xx in max(x - radius, 0) .. min(x + radius, image.width - 1):
-        values += image.getRgbaUnsafe(xx, y) * kernel[xx - x + radius]
-
+        values += image.unsafe[xx, y] * kernel[xx - x + radius]
       for xx in max(x - radius, image.width) .. x + radius:
         values += outOfBounds * kernel[xx - x + radius]
-
-      blurX.setRgbaUnsafe(y, x, rgbx(values))
+      blurX.unsafe[y, x] = rgbx(values)
 
   # Blur in the Y direction.
   for y in 0 ..< image.height:
@@ -472,83 +526,74 @@ proc blur*(
       var values: array[4, uint32]
       for yy in y - radius ..< min(y + radius, 0):
         values += outOfBounds * kernel[yy - y + radius]
-
       for yy in max(y - radius, 0) .. min(y + radius, image.height - 1):
-        values += blurX.getRgbaUnsafe(yy, x) * kernel[yy - y + radius]
-
+        values += blurX.unsafe[yy, x] * kernel[yy - y + radius]
       for yy in max(y - radius, image.height) .. y + radius:
         values += outOfBounds * kernel[yy - y + radius]
+      image.unsafe[x, y] = rgbx(values)
 
-      image.setRgbaUnsafe(x, y, rgbx(values))
-
-proc newMask*(image: Image): Mask =
-  ## Returns a new mask using the alpha values of the parameter image.
+proc newMask*(image: Image): Mask {.raises: [PixieError].} =
+  ## Returns a new mask using the alpha values of the image.
   result = newMask(image.width, image.height)
 
   var i: int
-  when defined(amd64) and not defined(pixieNoSimd):
-    for _ in countup(0, image.data.len - 16, 16):
-      var
+  when defined(amd64) and allowSimd:
+    for _ in 0 ..< image.data.len div 16:
+      let
         a = mm_loadu_si128(image.data[i + 0].addr)
         b = mm_loadu_si128(image.data[i + 4].addr)
         c = mm_loadu_si128(image.data[i + 8].addr)
         d = mm_loadu_si128(image.data[i + 12].addr)
-
-      a = packAlphaValues(a)
-      b = packAlphaValues(b)
-      c = packAlphaValues(c)
-      d = packAlphaValues(d)
-
-      b = mm_slli_si128(b, 4)
-      c = mm_slli_si128(c, 8)
-      d = mm_slli_si128(d, 12)
-
       mm_storeu_si128(
         result.data[i].addr,
-        mm_or_si128(mm_or_si128(a, b), mm_or_si128(c, d))
+        pack4xAlphaValues(a, b, c, d)
       )
-
       i += 16
 
   for j in i ..< image.data.len:
     result.data[j] = image.data[j].a
 
-proc getRgbaSmooth*(image: Image, x, y: float32, wrapped = false): ColorRGBX =
+proc getRgbaSmooth*(
+  image: Image, x, y: float32, wrapped = false
+): ColorRGBX {.raises: [].} =
   ## Gets a interpolated color with float point coordinates.
-  ## Pixes outside the image are transparent.
+  ## Pixels outside the image are transparent.
   let
-    minX = floor(x)
-    minY = floor(y)
-    diffX = x - minX
-    diffY = y - minY
-    x = minX.int
-    y = minY.int
-    x0 = (x + 0)
-    y0 = (y + 0)
-    x1 = (x + 1)
-    y1 = (y + 1)
+    x0 = x.floor.int
+    y0 = y.floor.int
+    x1 = x0 + 1
+    y1 = y0 + 1
+    xFractional = x - x.floor
+    yFractional = y - y.floor
 
   var x0y0, x1y0, x0y1, x1y1: ColorRGBX
   if wrapped:
-    x0y0 = image.getRgbaUnsafe(x0 mod image.width, y0 mod image.height)
-    x1y0 = image.getRgbaUnsafe(x1 mod image.width, y0 mod image.height)
-    x0y1 = image.getRgbaUnsafe(x0 mod image.width, y1 mod image.height)
-    x1y1 = image.getRgbaUnsafe(x1 mod image.width, y1 mod image.height)
+    x0y0 = image.unsafe[x0 mod image.width, y0 mod image.height]
+    x1y0 = image.unsafe[x1 mod image.width, y0 mod image.height]
+    x0y1 = image.unsafe[x0 mod image.width, y1 mod image.height]
+    x1y1 = image.unsafe[x1 mod image.width, y1 mod image.height]
   else:
     x0y0 = image[x0, y0]
     x1y0 = image[x1, y0]
     x0y1 = image[x0, y1]
     x1y1 = image[x1, y1]
 
-  let
-    bottomMix = lerp(x0y0, x1y0, diffX)
-    topMix = lerp(x0y1, x1y1, diffX)
+  var topMix = x0y0
+  if xFractional > 0 and x0y0 != x1y0:
+    topMix = mix(x0y0, x1y0, xFractional)
 
-  lerp(bottomMix, topMix, diffY)
+  var bottomMix = x0y1
+  if xFractional > 0 and x0y1 != x1y1:
+    bottomMix = mix(x0y1, x1y1, xFractional)
+
+  if yFractional != 0 and topMix != bottomMix:
+    mix(topMix, bottomMix, yFractional)
+  else:
+    topMix
 
 proc drawCorrect(
-  a, b: Image | Mask, mat = mat3(), tiled = false, blendMode = bmNormal
-) =
+  a, b: Image | Mask, transform = mat3(), blendMode = NormalBlend, tiled = false
+) {.raises: [PixieError].} =
   ## Draws one image onto another using matrix with color blending.
 
   when type(a) is Image:
@@ -557,32 +602,39 @@ proc drawCorrect(
     let masker = blendMode.masker()
 
   var
-    matInv = mat.inverse()
+    inverseTransform = transform.inverse()
+    # Compute movement vectors
+    p = inverseTransform * vec2(0 + h, 0 + h)
+    dx = inverseTransform * vec2(1 + h, 0 + h) - p
+    dy = inverseTransform * vec2(0 + h, 1 + h) - p
+    filterBy2 = max(dx.length, dy.length)
     b = b
 
-  block: # Shrink by 2 as needed
-    var
-      p = matInv * vec2(0 + h, 0 + h)
-      dx = matInv * vec2(1 + h, 0 + h) - p
-      dy = matInv * vec2(0 + h, 1 + h) - p
-      minFilterBy2 = max(dx.length, dy.length)
+  while filterBy2 >= 2.0:
+    b = b.minifyBy2()
+    p /= 2
+    dx /= 2
+    dy /= 2
+    filterBy2 /= 2
+    inverseTransform = scale(vec2(1/2, 1/2)) * inverseTransform
 
-    while minFilterBy2 >= 2:
-      b = b.minifyBy2()
-      dx /= 2
-      dy /= 2
-      minFilterBy2 /= 2
-      matInv = matInv * scale(vec2(0.5, 0.5))
+  while filterBy2 <= 0.5:
+    b = b.magnifyBy2()
+    p *= 2
+    dx *= 2
+    dy *= 2
+    filterBy2 *= 2
+    inverseTransform = scale(vec2(2, 2)) * inverseTransform
 
   for y in 0 ..< a.height:
     for x in 0 ..< a.width:
       let
-        samplePos = matInv * vec2(x.float32 + h, y.float32 + h)
+        samplePos = inverseTransform * vec2(x.float32 + h, y.float32 + h)
         xFloat = samplePos.x - h
         yFloat = samplePos.y - h
 
       when type(a) is Image:
-        let backdrop = a.getRgbaUnsafe(x, y)
+        let backdrop = a.unsafe[x, y]
         when type(b) is Image:
           let
             sample = b.getRgbaSmooth(xFloat, yFloat, tiled)
@@ -591,22 +643,24 @@ proc drawCorrect(
           let
             sample = b.getValueSmooth(xFloat, yFloat)
             blended = blender(backdrop, rgbx(0, 0, 0, sample))
-        a.setRgbaUnsafe(x, y, blended)
+        a.unsafe[x, y] = blended
       else: # a is a Mask
-        let backdrop = a.getValueUnsafe(x, y)
+        let backdrop = a.unsafe[x, y]
         when type(b) is Image:
           let sample = b.getRgbaSmooth(xFloat, yFloat, tiled).a
         else: # b is a Mask
           let sample = b.getValueSmooth(xFloat, yFloat)
         a.setValueUnsafe(x, y, masker(backdrop, sample))
 
-proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
+proc drawUber(
+  a, b: Image | Mask, transform = mat3(), blendMode: BlendMode
+) {.raises: [PixieError].} =
   let
     corners = [
-      mat * vec2(0, 0),
-      mat * vec2(b.width.float32, 0),
-      mat * vec2(b.width.float32, b.height.float32),
-      mat * vec2(0, b.height.float32)
+      transform * vec2(0, 0),
+      transform * vec2(b.width.float32, 0),
+      transform * vec2(b.width.float32, b.height.float32),
+      transform * vec2(0, b.height.float32)
     ]
     perimeter = [
       segment(corners[0], corners[1]),
@@ -616,54 +670,61 @@ proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
     ]
 
   var
-    matInv = mat.inverse()
+    inverseTransform = transform.inverse()
     # Compute movement vectors
-    p = matInv * vec2(0 + h, 0 + h)
-    dx = matInv * vec2(1 + h, 0 + h) - p
-    dy = matInv * vec2(0 + h, 1 + h) - p
-    minFilterBy2 = max(dx.length, dy.length)
+    p = inverseTransform * vec2(0 + h, 0 + h)
+    dx = inverseTransform * vec2(1 + h, 0 + h) - p
+    dy = inverseTransform * vec2(0 + h, 1 + h) - p
+    filterBy2 = max(dx.length, dy.length)
     b = b
 
-  while minFilterBy2 >= 2.0:
+  while filterBy2 >= 2.0:
     b = b.minifyBy2()
     p /= 2
     dx /= 2
     dy /= 2
-    minFilterBy2 /= 2
-    matInv = matInv * scale(vec2(0.5, 0.5))
+    filterBy2 /= 2
 
-  let smooth = not(
-    dx.length == 1.0 and
-    dy.length == 1.0 and
-    mat[2, 0].fractional == 0.0 and
-    mat[2, 1].fractional == 0.0
-  )
+  while filterBy2 <= 0.5:
+    b = b.magnifyBy2()
+    p *= 2
+    dx *= 2
+    dy *= 2
+    filterBy2 *= 2
+
+  let
+    hasRotationOrScaling = not(dx == vec2(1, 0) and dy == vec2(0, 1))
+    smooth = not(
+      dx.length == 1.0 and
+      dy.length == 1.0 and
+      transform[2, 0].fractional == 0.0 and
+      transform[2, 1].fractional == 0.0
+    )
+
+  # Determine where we should start and stop drawing in the y dimension
+  var
+    yMin = a.height
+    yMax = 0
+  for segment in perimeter:
+    yMin = min(yMin, segment.at.y.floor.int)
+    yMax = max(yMax, segment.at.y.ceil.int)
+  yMin = yMin.clamp(0, a.height)
+  yMax = yMax.clamp(0, a.height)
 
   when type(a) is Image:
     let blender = blendMode.blender()
   else: # a is a Mask
     let masker = blendMode.masker()
 
-  # Determine where we should start and stop drawing in the y dimension
-  var yMin, yMax: int
-  if blendMode == bmMask:
-    yMin = 0
-    yMax = a.height
-  else:
-    yMin = a.height
-    yMax = 0
-    for segment in perimeter:
-      yMin = min(yMin, segment.at.y.floor.int)
-      yMax = max(yMax, segment.at.y.ceil.int)
-
-  yMin = yMin.clamp(0, a.height)
-  yMax = yMax.clamp(0, a.height)
+  if blendMode == MaskBlend:
+    if yMin > 0:
+      zeroMem(a.data[0].addr, 4 * yMin * a.width)
 
   for y in yMin ..< yMax:
     # Determine where we should start and stop drawing in the x dimension
     var
-      xMin = a.width
-      xMax = 0
+      xMin = a.width.float32
+      xMax = 0.float32
     for yOffset in [0.float32, 1]:
       let scanLine = Line(
         a: vec2(-1000, y.float32 + yOffset),
@@ -672,137 +733,376 @@ proc drawUber(a, b: Image | Mask, mat = mat3(), blendMode = bmNormal) =
       for segment in perimeter:
         var at: Vec2
         if scanline.intersects(segment, at) and segment.to != at:
-          xMin = min(xMin, at.x.floor.int)
-          xMax = max(xMax, at.x.ceil.int)
+          xMin = min(xMin, at.x)
+          xMax = max(xMax, at.x)
 
-    xMin = xMin.clamp(0, a.width)
-    xMax = xMax.clamp(0, a.width)
+    var xStart, xStop: int
+    if hasRotationOrScaling or smooth:
+      xStart = xMin.floor.int
+      xStop = xMax.ceil.int
+    else:
+      # Rotation of 360 degrees can cause knife-edge issues with floor and ceil
+      xStart = xMin.round().int
+      xStop = xMax.round().int
+    xStart = xStart.clamp(0, a.width)
+    xStop = xStop.clamp(0, a.width)
 
-    if blendMode == bmMask:
-      if xMin > 0:
-        zeroMem(a.data[a.dataIndex(0, y)].addr, 4 * xMin)
+    # Skip this row if there is nothing in-bounds to draw
+    if xStart == a.width or xStop == 0:
+      continue
+
+    if blendMode == MaskBlend:
+      if xStart > 0:
+        zeroMem(a.data[a.dataIndex(0, y)].addr, 4 * xStart)
 
     if smooth:
-      for x in xMin ..< xMax:
-        let
-          srcPos = p + dx * x.float32 + dy * y.float32
-          xFloat = srcPos.x - h
-          yFloat = srcPos.y - h
+      var srcPos = p + dx * xStart.float32 + dy * y.float32
+      srcPos = vec2(srcPos.x - h, srcPos.y - h)
+
+      for x in xStart ..< xStop:
         when type(a) is Image:
-          let backdrop = a.getRgbaUnsafe(x, y)
+          let backdrop = a.unsafe[x, y]
           when type(b) is Image:
             let
-              sample = b.getRgbaSmooth(xFloat, yFloat)
+              sample = b.getRgbaSmooth(srcPos.x, srcPos.y)
               blended = blender(backdrop, sample)
           else: # b is a Mask
             let
-              sample = b.getValueSmooth(xFloat, yFloat)
+              sample = b.getValueSmooth(srcPos.x, srcPos.y)
               blended = blender(backdrop, rgbx(0, 0, 0, sample))
-          a.setRgbaUnsafe(x, y, blended)
+          a.unsafe[x, y] = blended
         else: # a is a Mask
-          let backdrop = a.getValueUnsafe(x, y)
+          let backdrop = a.unsafe[x, y]
           when type(b) is Image:
-            let sample = b.getRgbaSmooth(xFloat, yFloat).a
+            let sample = b.getRgbaSmooth(srcPos.x, srcPos.y).a
           else: # b is a Mask
-            let sample = b.getValueSmooth(xFloat, yFloat)
-          a.setValueUnsafe(x, y, masker(backdrop, sample))
+            let sample = b.getValueSmooth(srcPos.x, srcPos.y)
+          a.unsafe[x, y] = masker(backdrop, sample)
+
+        srcPos += dx
+
     else:
-      var x = xMin
-      when defined(amd64) and not defined(pixieNoSimd):
-        if dx.x == 1 and dx.y == 0 and dy.x == 0 and dy.y == 1:
-          # Check we are not rotated before using SIMD blends
-          when type(a) is Image:
-            if blendMode.hasSimdBlender():
-              let blenderSimd = blendMode.blenderSimd()
-              for _ in countup(x, xMax - 4, 4):
-                let
-                  srcPos = p + dx * x.float32 + dy * y.float32
-                  sx = srcPos.x.int
-                  sy = srcPos.y.int
-                  backdrop = mm_loadu_si128(a.data[a.dataIndex(x, y)].addr)
+      var x = xStart
+      if not hasRotationOrScaling:
+        let
+          srcPos = p + dx * x.float32 + dy * y.float32
+          sy = srcPos.y.int
+        var sx = srcPos.x.int
+
+        when type(a) is Image and type(b) is Image:
+          if blendMode in {NormalBlend, OverwriteBlend} and
+            isOpaque(b.data, b.dataIndex(sx, sy), xStop - xStart):
+            copyMem(
+              a.data[a.dataIndex(x, y)].addr,
+              b.data[b.dataIndex(sx, sy)].addr,
+              (xStop - xStart) * 4
+            )
+            continue
+
+        when defined(amd64) and allowSimd:
+          case blendMode:
+          of OverwriteBlend:
+            for _ in 0 ..< (xStop - xStart) div 16:
+              when type(a) is Image:
                 when type(b) is Image:
-                  let source = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                  for q in [0, 4, 8, 12]:
+                    let sourceVec = mm_loadu_si128(b.data[b.dataIndex(sx + q, sy)].addr)
+                    mm_storeu_si128(a.data[a.dataIndex(x + q, y)].addr, sourceVec)
                 else: # b is a Mask
-                  # Need to move 4 mask values into the alpha slots
-                  var source = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
-                  source = unpackAlphaValues(source)
-
-                mm_storeu_si128(
-                  a.data[a.dataIndex(x, y)].addr,
-                  blenderSimd(backdrop, source)
-                )
-                x += 4
-
-          else: # is a Mask
-            if blendMode.hasSimdMasker():
-              let maskerSimd = blendMode.maskerSimd()
-              for _ in countup(x, xMax - 16, 16):
-                let
-                  srcPos = p + dx * x.float32 + dy * y.float32
-                  sx = srcPos.x.int
-                  sy = srcPos.y.int
-                  backdrop = mm_loadu_si128(a.data[a.dataIndex(x, y)].addr)
+                  var values = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                  for q in [0, 4, 8, 12]:
+                    let sourceVec = unpackAlphaValues(values)
+                    mm_storeu_si128(a.data[a.dataIndex(x + q, y)].addr, sourceVec)
+                    # Shuffle 32 bits off for the next iteration
+                    values = mm_srli_si128(values, 4)
+              else: # a is a Mask
                 when type(b) is Image:
-                  # Need to read 16 colors and pack their alpha values
                   var
                     i = mm_loadu_si128(b.data[b.dataIndex(sx + 0, sy)].addr)
                     j = mm_loadu_si128(b.data[b.dataIndex(sx + 4, sy)].addr)
                     k = mm_loadu_si128(b.data[b.dataIndex(sx + 8, sy)].addr)
                     l = mm_loadu_si128(b.data[b.dataIndex(sx + 12, sy)].addr)
-
-                  i = packAlphaValues(i)
-                  j = packAlphaValues(j)
-                  k = packAlphaValues(k)
-                  l = packAlphaValues(l)
-
-                  j = mm_slli_si128(j, 4)
-                  k = mm_slli_si128(k, 8)
-                  l = mm_slli_si128(l, 12)
-
-                  let source = mm_or_si128(mm_or_si128(i, j), mm_or_si128(k, l))
+                  let sourceVec = pack4xAlphaValues(i, j, k, l)
                 else: # b is a Mask
-                  let source = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
-
+                  let sourceVec = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                mm_storeu_si128(a.data[a.dataIndex(x, y)].addr, sourceVec)
+              x += 16
+              sx += 16
+          of NormalBlend:
+            let vec255 = mm_set1_epi32(cast[int32](uint32.high))
+            for _ in 0 ..< (xStop - xStart) div 16:
+              when type(a) is Image:
+                when type(b) is Image:
+                  for q in [0, 4, 8, 12]:
+                    let
+                      sourceVec = mm_loadu_si128(b.data[b.dataIndex(sx + q, sy)].addr)
+                      eqZer0 = mm_cmpeq_epi8(sourceVec, mm_setzero_si128())
+                    if mm_movemask_epi8(eqZer0) != 0xffff:
+                      let eq255 = mm_cmpeq_epi8(sourceVec, vec255)
+                      if (mm_movemask_epi8(eq255) and 0x8888) == 0x8888:
+                        mm_storeu_si128(a.data[a.dataIndex(x + q, y)].addr, sourceVec)
+                      else:
+                        let
+                          backdropIdx = a.dataIndex(x + q, y)
+                          backdropVec = mm_loadu_si128(a.data[backdropIdx].addr)
+                        mm_storeu_si128(
+                          a.data[backdropIdx].addr,
+                          blendNormalSimd(backdropVec, sourceVec)
+                        )
+                else: # b is a Mask
+                  var values = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                  for q in [0, 4, 8, 12]:
+                    let
+                      sourceVec = unpackAlphaValues(values)
+                      eqZer0 = mm_cmpeq_epi8(sourceVec, mm_setzero_si128())
+                    if mm_movemask_epi8(eqZer0) != 0xffff:
+                      let eq255 = mm_cmpeq_epi8(sourceVec, vec255)
+                      if (mm_movemask_epi8(eq255) and 0x8888) == 0x8888:
+                        discard
+                      else:
+                        let
+                          backdropIdx = a.dataIndex(x + q, y)
+                          backdropVec = mm_loadu_si128(a.data[backdropIdx].addr)
+                        mm_storeu_si128(
+                          a.data[backdropIdx].addr,
+                          blendNormalSimd(backdropVec, sourceVec)
+                        )
+                    # Shuffle 32 bits off for the next iteration
+                    values = mm_srli_si128(values, 4)
+              else: # a is a Mask
+                let backdropVec = mm_loadu_si128(a.data[a.dataIndex(x, y)].addr)
+                when type(b) is Image:
+                  var
+                    i = mm_loadu_si128(b.data[b.dataIndex(sx + 0, sy)].addr)
+                    j = mm_loadu_si128(b.data[b.dataIndex(sx + 4, sy)].addr)
+                    k = mm_loadu_si128(b.data[b.dataIndex(sx + 8, sy)].addr)
+                    l = mm_loadu_si128(b.data[b.dataIndex(sx + 12, sy)].addr)
+                  let sourceVec = pack4xAlphaValues(i, j, k, l)
+                else: # b is a Mask
+                  let sourceVec = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
                 mm_storeu_si128(
                   a.data[a.dataIndex(x, y)].addr,
-                  maskerSimd(backdrop, source)
+                  maskBlendNormalSimd(backdropVec, sourceVec)
                 )
-                x += 16
+              x += 16
+              sx += 16
+          of MaskBlend:
+            let vec255 = mm_set1_epi32(cast[int32](uint32.high))
+            for _ in 0 ..< (xStop - xStart) div 16:
+              when type(a) is Image:
+                when type(b) is Image:
+                  for q in [0, 4, 8, 12]:
+                    let
+                      sourceVec = mm_loadu_si128(b.data[b.dataIndex(sx + q, sy)].addr)
+                      eqZer0 = mm_cmpeq_epi8(sourceVec, mm_setzero_si128())
+                    if mm_movemask_epi8(eqZer0) == 0xffff:
+                      mm_storeu_si128(
+                        a.data[a.dataIndex(x + q, y)].addr,
+                        mm_setzero_si128()
+                      )
+                    elif mm_movemask_epi8(mm_cmpeq_epi8(sourceVec, vec255)) != 0xffff:
+                      let backdropVec = mm_loadu_si128(a.data[a.dataIndex(x + q, y)].addr)
+                      mm_storeu_si128(
+                        a.data[a.dataIndex(x + q, y)].addr,
+                        blendMaskSimd(backdropVec, sourceVec)
+                      )
+                else: # b is a Mask
+                  var values = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                  for q in [0, 4, 8, 12]:
+                    let
+                      sourceVec = unpackAlphaValues(values)
+                      eqZer0 = mm_cmpeq_epi8(sourceVec, mm_setzero_si128())
+                      eq255 = mm_cmpeq_epi8(sourceVec, vec255)
+                    if mm_movemask_epi8(eqZer0) == 0xffff:
+                      mm_storeu_si128(
+                        a.data[a.dataIndex(x + q, y)].addr,
+                        mm_setzero_si128()
+                      )
+                    elif (mm_movemask_epi8(eq255) and 0x8888) != 0x8888:
+                      let backdropVec = mm_loadu_si128(a.data[a.dataIndex(x + q, y)].addr)
+                      mm_storeu_si128(
+                        a.data[a.dataIndex(x + q, y)].addr,
+                        blendMaskSimd(backdropVec, sourceVec)
+                      )
+                    # Shuffle 32 bits off for the next iteration
+                    values = mm_srli_si128(values, 4)
+              else: # a is a Mask
+                let backdropVec = mm_loadu_si128(a.data[a.dataIndex(x, y)].addr)
+                when type(b) is Image:
+                  var
+                    i = mm_loadu_si128(b.data[b.dataIndex(sx + 0, sy)].addr)
+                    j = mm_loadu_si128(b.data[b.dataIndex(sx + 4, sy)].addr)
+                    k = mm_loadu_si128(b.data[b.dataIndex(sx + 8, sy)].addr)
+                    l = mm_loadu_si128(b.data[b.dataIndex(sx + 12, sy)].addr)
+                  let sourceVec = pack4xAlphaValues(i, j, k, l)
+                else: # b is a Mask
+                  let sourceVec = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                mm_storeu_si128(
+                  a.data[a.dataIndex(x, y)].addr,
+                  maskBlendMaskSimd(backdropVec, sourceVec)
+                )
+              x += 16
+              sx += 16
+          else:
+            when type(a) is Image:
+              if blendMode.hasSimdBlender():
+                let blenderSimd = blendMode.blenderSimd()
+                for _ in 0 ..< (xStop - xStart) div 16:
+                  when type(b) is Image:
+                    for q in [0, 4, 8, 12]:
+                      let
+                        backdrop = mm_loadu_si128(a.data[a.dataIndex(x + q, y)].addr)
+                        source = mm_loadu_si128(b.data[b.dataIndex(sx + q, sy)].addr)
+                      mm_storeu_si128(
+                        a.data[a.dataIndex(x + q, y)].addr,
+                        blenderSimd(backdrop, source)
+                      )
+                  else: # b is a Mask
+                    var values = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+                    for q in [0, 4, 8, 12]:
+                      let
+                        backdrop = mm_loadu_si128(a.data[a.dataIndex(x + q, y)].addr)
+                        source = unpackAlphaValues(values)
+                      mm_storeu_si128(
+                        a.data[a.dataIndex(x + q, y)].addr,
+                        blenderSimd(backdrop, source)
+                      )
+                      # Shuffle 32 bits off for the next iteration
+                      values = mm_srli_si128(values, 4)
+                  x += 16
+                  sx += 16
+            else: # is a Mask
+              if blendMode.hasSimdMasker():
+                let maskerSimd = blendMode.maskerSimd()
+                for _ in 0 ..< (xStop - xStart) div 16:
+                  let backdrop = mm_loadu_si128(a.data[a.dataIndex(x, y)].addr)
+                  when type(b) is Image:
+                    # Need to read 16 colors and pack their alpha values
+                    let
+                      i = mm_loadu_si128(b.data[b.dataIndex(sx + 0, sy)].addr)
+                      j = mm_loadu_si128(b.data[b.dataIndex(sx + 4, sy)].addr)
+                      k = mm_loadu_si128(b.data[b.dataIndex(sx + 8, sy)].addr)
+                      l = mm_loadu_si128(b.data[b.dataIndex(sx + 12, sy)].addr)
+                      source = pack4xAlphaValues(i, j, k, l)
+                  else: # b is a Mask
+                    let source = mm_loadu_si128(b.data[b.dataIndex(sx, sy)].addr)
+
+                  mm_storeu_si128(
+                    a.data[a.dataIndex(x, y)].addr,
+                    maskerSimd(backdrop, source)
+                  )
+                  x += 16
+                  sx += 16
 
       var srcPos = p + dx * x.float32 + dy * y.float32
-      srcPos = vec2(max(0, srcPos.x), max(0, srcPos.y))
+      srcPos = vec2(
+        clamp(srcPos.x, 0, b.width.float32),
+        clamp(srcPos.y, 0, b.height.float32)
+      )
 
-      for x in x ..< xMax:
-        let samplePos = ivec2((srcPos.x - h).int32, (srcPos.y - h).int32)
+      case blendMode:
+      of OverwriteBlend:
+        for x in x ..< xStop:
+          let samplePos = ivec2((srcPos.x - h).int32, (srcPos.y - h).int32)
+          when type(a) is Image:
+            when type(b) is Image:
+              let source = b.unsafe[samplePos.x, samplePos.y]
+            else: # b is a Mask
+              let source = rgbx(0, 0, 0, b.unsafe[samplePos.x, samplePos.y])
+            if source.a > 0:
+              a.unsafe[x, y] = source
+          else: # a is a Mask
+            when type(b) is Image:
+              let source = b.unsafe[samplePos.x, samplePos.y].a
+            else: # b is a Mask
+              let source = b.unsafe[samplePos.x, samplePos.y]
+            if source > 0:
+              a.unsafe[x, y] = source
+          srcPos += dx
+      of NormalBlend:
+        for x in x ..< xStop:
+          let samplePos = ivec2((srcPos.x - h).int32, (srcPos.y - h).int32)
+          when type(a) is Image:
+            when type(b) is Image:
+              let source = b.unsafe[samplePos.x, samplePos.y]
+            else: # b is a Mask
+              let source = rgbx(0, 0, 0, b.unsafe[samplePos.x, samplePos.y])
+            if source.a > 0:
+              if source.a == 255:
+                a.unsafe[x, y] = source
+              else:
+                let backdrop = a.unsafe[x, y]
+                a.unsafe[x, y] = blendNormal(backdrop, source)
+          else: # a is a Mask
+            when type(b) is Image:
+              let source = b.unsafe[samplePos.x, samplePos.y].a
+            else: # b is a Mask
+              let source = b.unsafe[samplePos.x, samplePos.y]
+            if source > 0:
+              if source == 255:
+                a.unsafe[x, y] = source
+              else:
+                let backdrop = a.unsafe[x, y]
+                a.unsafe[x, y] = blendAlpha(backdrop, source)
+          srcPos += dx
+      of MaskBlend:
+        for x in x ..< xStop:
+          let samplePos = ivec2((srcPos.x - h).int32, (srcPos.y - h).int32)
+          when type(a) is Image:
+            when type(b) is Image:
+              let source = b.unsafe[samplePos.x, samplePos.y]
+            else: # b is a Mask
+              let source = rgbx(0, 0, 0, b.unsafe[samplePos.x, samplePos.y])
+            if source.a == 0:
+              a.unsafe[x, y] = rgbx(0, 0, 0, 0)
+            elif source.a != 255:
+              let backdrop = a.unsafe[x, y]
+              a.unsafe[x, y] = blendMask(backdrop, source)
+          else: # a is a Mask
+            when type(b) is Image:
+              let source = b.unsafe[samplePos.x, samplePos.y].a
+            else: # b is a Mask
+              let source = b.unsafe[samplePos.x, samplePos.y]
+            if source == 0:
+              a.unsafe[x, y] = 0
+            elif source != 255:
+              let backdrop = a.unsafe[x, y]
+              a.unsafe[x, y] = maskBlendMask(backdrop, source)
+          srcPos += dx
+      else:
+        for x in x ..< xStop:
+          let samplePos = ivec2((srcPos.x - h).int32, (srcPos.y - h).int32)
+          when type(a) is Image:
+            let backdrop = a.unsafe[x, y]
+            when type(b) is Image:
+              let
+                sample = b.unsafe[samplePos.x, samplePos.y]
+                blended = blender(backdrop, sample)
+            else: # b is a Mask
+              let
+                sample = b.unsafe[samplePos.x, samplePos.y]
+                blended = blender(backdrop, rgbx(0, 0, 0, sample))
+            a.unsafe[x, y] = blended
+          else: # a is a Mask
+            let backdrop = a.unsafe[x, y]
+            when type(b) is Image:
+              let sample = b.unsafe[samplePos.x, samplePos.y].a
+            else: # b is a Mask
+              let sample = b.unsafe[samplePos.x, samplePos.y]
+            a.unsafe[x, y] = masker(backdrop, sample)
+          srcPos += dx
 
-        when type(a) is Image:
-          let backdrop = a.getRgbaUnsafe(x, y)
-          when type(b) is Image:
-            let
-              sample = b.getRgbaUnsafe(samplePos.x, samplePos.y)
-              blended = blender(backdrop, sample)
-          else: # b is a Mask
-            let
-              sample = b.getValueUnsafe(samplePos.x, samplePos.y)
-              blended = blender(backdrop, rgbx(0, 0, 0, sample))
-          a.setRgbaUnsafe(x, y, blended)
-        else: # a is a Mask
-          let backdrop = a.getValueUnsafe(x, y)
-          when type(b) is Image:
-            let sample = b.getRgbaUnsafe(samplePos.x, samplePos.y).a
-          else: # b is a Mask
-            let sample = b.getValueUnsafe(samplePos.x, samplePos.y)
-          a.setValueUnsafe(x, y, masker(backdrop, sample))
+    if blendMode == MaskBlend:
+      if a.width - xStop > 0:
+        zeroMem(a.data[a.dataIndex(xStop, y)].addr, 4 * (a.width - xStop))
 
-        srcPos += dx
-
-    if blendMode == bmMask:
-      if a.width - xMax > 0:
-        zeroMem(a.data[a.dataIndex(xMax, y)].addr, 4 * (a.width - xMax))
+  if blendMode == MaskBlend:
+    if a.height - yMax > 0:
+      zeroMem(a.data[a.dataIndex(0, yMax)].addr, 4 * a.width * (a.height - yMax))
 
 proc draw*(
-  a, b: Image, transform: Vec2 | Mat3 = vec2(), blendMode = bmNormal
-) {.inline.} =
+  a, b: Image, transform = mat3(), blendMode = NormalBlend
+) {.inline, raises: [PixieError].} =
   ## Draws one image onto another using matrix with color blending.
   when type(transform) is Vec2:
     a.drawUber(b, translate(transform), blendMode)
@@ -810,8 +1110,8 @@ proc draw*(
     a.drawUber(b, transform, blendMode)
 
 proc draw*(
-  a, b: Mask, transform: Vec2 | Mat3 = vec2(), blendMode = bmMask
-) {.inline.} =
+  a, b: Mask, transform = mat3(), blendMode = MaskBlend
+) {.inline, raises: [PixieError].} =
   ## Draws a mask onto a mask using a matrix with color blending.
   when type(transform) is Vec2:
     a.drawUber(b, translate(transform), blendMode)
@@ -819,8 +1119,8 @@ proc draw*(
     a.drawUber(b, transform, blendMode)
 
 proc draw*(
-  image: Image, mask: Mask, transform: Vec2 | Mat3 = vec2(), blendMode = bmMask
-) {.inline.} =
+  image: Image, mask: Mask, transform = mat3(), blendMode = MaskBlend
+) {.inline, raises: [PixieError].} =
   ## Draws a mask onto an image using a matrix with color blending.
   when type(transform) is Vec2:
     image.drawUber(mask, translate(transform), blendMode)
@@ -828,18 +1128,20 @@ proc draw*(
     image.drawUber(mask, transform, blendMode)
 
 proc draw*(
-  mask: Mask, image: Image, transform: Vec2 | Mat3 = vec2(), blendMode = bmMask
-) {.inline.} =
+  mask: Mask, image: Image, transform = mat3(), blendMode = MaskBlend
+) {.inline, raises: [PixieError].} =
   ## Draws a image onto a mask using a matrix with color blending.
   when type(transform) is Vec2:
     mask.drawUber(image, translate(transform), blendMode)
   else:
     mask.drawUber(image, transform, blendMode)
 
-proc drawTiled*(dest, src: Image, mat: Mat3, blendMode = bmNormal) =
-  dest.drawCorrect(src, mat, true, blendMode)
+proc drawTiled*(
+  dst, src: Image, mat: Mat3, blendMode = NormalBlend
+) {.raises: [PixieError].} =
+  dst.drawCorrect(src, mat, blendMode, true)
 
-proc resize*(srcImage: Image, width, height: int): Image =
+proc resize*(srcImage: Image, width, height: int): Image {.raises: [PixieError].} =
   ## Resize an image to a given height and width.
   if width == srcImage.width and height == srcImage.height:
     result = srcImage.copy()
@@ -851,33 +1153,54 @@ proc resize*(srcImage: Image, width, height: int): Image =
         width.float32 / srcImage.width.float32,
         height.float32 / srcImage.height.float32
       )),
-      bmOverwrite
+      OverwriteBlend
     )
 
-proc shift*(target: Image | Mask, offset: Vec2) =
-  ## Shifts the target by offset.
-  if offset != vec2(0, 0):
-    let copy = target.copy() # Copy to read from
-
-    # Reset target for being drawn to
-    when type(target) is Image:
-      target.fill(rgbx(0, 0, 0, 0))
-    else:
-      target.fill(0)
-
-    target.draw(copy, offset, bmOverwrite) # Draw copy at offset
+proc resize*(srcMask: Mask, width, height: int): Mask {.raises: [PixieError].} =
+  ## Resize a mask to a given height and width.
+  if width == srcMask.width and height == srcMask.height:
+    result = srcMask.copy()
+  else:
+    result = newMask(width, height)
+    result.draw(
+      srcMask,
+      scale(vec2(
+        width.float32 / srcMask.width.float32,
+        height.float32 / srcMask.height.float32
+      )),
+      OverwriteBlend
+    )
 
 proc shadow*(
   image: Image, offset: Vec2, spread, blur: float32, color: SomeColor
-): Image =
+): Image {.raises: [PixieError].} =
   ## Create a shadow of the image with the offset, spread and blur.
   let mask = image.newMask()
-  mask.shift(offset)
-  mask.spread(spread)
-  mask.blur(blur)
-  result = newImage(mask.width, mask.height)
+
+  var shifted: Mask
+  if offset == vec2(0, 0):
+    shifted = mask
+  else:
+    shifted = newMask(mask.width, mask.height)
+    shifted.draw(mask, translate(offset), OverwriteBlend)
+
+  shifted.spread(spread)
+  shifted.blur(blur)
+
+  result = newImage(shifted.width, shifted.height)
   result.fill(color)
-  result.draw(mask, blendMode = bmMask)
+  result.draw(shifted)
+
+proc superImage*(image: Image, x, y, w, h: int): Image {.raises: [PixieError].} =
+  ## Either cuts a sub image or returns a super image with padded transparency.
+  if x >= 0 and x + w <= image.width and y >= 0 and y + h <= image.height:
+    result = image.subImage(x, y, w, h)
+  elif abs(x) >= image.width or abs(y) >= image.height:
+    # Nothing to copy, just an empty new image
+    result = newImage(w, h)
+  else:
+    result = newImage(w, h)
+    result.draw(image, translate(vec2(-x.float32, -y.float32)), OverwriteBlend)
 
 when defined(release):
   {.pop.}

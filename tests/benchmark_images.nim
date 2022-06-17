@@ -17,6 +17,18 @@ timeIt "fill_rgba":
   image.fill(rgba(63, 127, 191, 191))
   doAssert image[0, 0] == rgba(63, 127, 191, 191)
 
+image.fill(rgba(100, 0, 100, 100))
+timeIt "isOneColor":
+  doAssert image.isOneColor()
+
+image.fill(rgba(0, 0, 0, 0))
+timeIt "isTransparent":
+  doAssert image.isTransparent()
+
+image.fill(rgba(255, 255, 255, 255))
+timeIt "isOpaque":
+  doAssert image.isOpaque()
+
 reset()
 
 timeIt "subImage":
@@ -41,6 +53,21 @@ timeIt "magnifyBy2":
 
 reset()
 
+timeIt "flipHorizontal":
+  image.flipHorizontal()
+
+reset()
+
+timeIt "flipVertical":
+  image.flipVertical()
+
+reset()
+
+timeIt "rotate90":
+  image.rotate90()
+
+reset()
+
 timeIt "invert":
   image.invert()
 
@@ -62,7 +89,7 @@ timeIt "toStraightAlpha":
 reset()
 
 block:
-  var path: Path
+  let path = newPath()
   path.ellipse(image.width / 2, image.height / 2, 300, 300)
 
   let mask = newMask(image.width, image.height)
@@ -93,18 +120,18 @@ timeIt "blur":
 
 reset()
 
-timeIt "lerp integers":
+timeIt "mix integers":
   for i in 0 ..< 100000:
     let c = image[0, 0]
     var z: int
     for t in 0 .. 100:
-      z += lerp(c, c, t.float32 / 100).a.int
+      z += mix(c, c, t.float32 / 100).a.int
     doAssert z > 0
 
-timeIt "lerp floats":
+timeIt "mix floats":
   for i in 0 ..< 100000:
     let c = image[0, 0]
     var z: int
     for t in 0 .. 100:
-      z += lerp(c.color, c.color, t.float32 / 100).rgba().a.int
+      z += mix(c.color, c.color, t.float32 / 100).rgba().a.int
     doAssert z > 0

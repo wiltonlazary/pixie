@@ -1,83 +1,33 @@
 ## Load and Save SVG files.
 
-import cairo, chroma, pixie/common, pixie/images, pixie/paths, strutils, vmath,
-    xmlparser, xmltree
+import cairo, chroma, pixie/common, pixie/images, pixie/paints, strutils,
+    tables, vmath, xmlparser, xmltree
 
-type Path = paths.Path
+include pixie/paths
 
-proc processCommands(c: ptr Context, path: paths.Path) =
+proc processCommands(
+  c: ptr Context, path: Path, closeSubpaths: bool, mat: Mat3
+) =
+  let shapes = path.commandsToShapes(closeSubpaths, mat.pixelScale())
+  if shapes.len == 0:
+    return
+
   c.newPath()
-  c.moveTo(0, 0)
-  for i, command in path.commands:
-    case command.kind
-    of Move:
-      c.moveTo(command.numbers[0], command.numbers[1])
-    of Line:
-      c.lineTo(command.numbers[0], command.numbers[1])
-    of HLine:
-      echo "HLine not yet supported for Cairo"
-    of VLine:
-      echo "VLine not yet supported for Cairo"
-    of Cubic:
-      c.curveTo(
-        command.numbers[0],
-        command.numbers[1],
-        command.numbers[2],
-        command.numbers[3],
-        command.numbers[4],
-        command.numbers[5]
-      )
-    of SCubic:
-      echo "SCubic not yet supported for Cairo"
-    of Quad:
-      echo "Quad not supported by Cairo"
-    of TQuad:
-      echo "TQuad not supported by Cairo"
-    of Arc:
-      echo "Arc not yet supported for Cairo"
-    of RMove:
-      c.relMoveTo(command.numbers[0], command.numbers[1])
-    of RLine:
-      c.relLineTo(command.numbers[0], command.numbers[1])
-    of RHLine:
-      c.relLineTo(command.numbers[0], 0)
-    of RVLine:
-      c.relLineTo(0, command.numbers[0])
-    of RCubic:
-      c.relCurveTo(
-        command.numbers[0],
-        command.numbers[1],
-        command.numbers[2],
-        command.numbers[3],
-        command.numbers[4],
-        command.numbers[5]
-      )
-    of RSCubic:
-      # This is not correct but good enough for now
-      c.relLineTo(
-        command.numbers[2],
-        command.numbers[3]
-      )
-    of RQuad:
-      echo "RQuad not supported by Cairo"
-    of RTQuad:
-      echo "RTQuad not supported by Cairo"
-    of RArc:
-      echo "RArc not yet supported for Cairo"
-    of Close:
-      c.closePath()
-
-    checkStatus(c.status())
+  c.moveTo(shapes[0][0].x, shapes[0][0].y)
+  for shape in shapes:
+    for v in shape:
+      c.lineTo(v.x, v.y)
 
 proc prepare(
   c: ptr Context,
   path: Path,
-  color: ColorRGBA,
+  paint: Paint,
   mat: Mat3,
-  windingRule = wrNonZero
+  closeSubpaths: bool,
+  windingRule = NonZero
 ) =
   let
-    color = color.color()
+    color = paint.color
     matrix = Matrix(
       xx: mat[0, 0],
       yx: mat[0, 1],
@@ -89,22 +39,31 @@ proc prepare(
   c.setSourceRgba(color.r, color.g, color.b, color.a)
   c.setMatrix(matrix.unsafeAddr)
   case windingRule:
-  of wrNonZero:
+  of NonZero:
     c.setFillRule(FillRuleWinding)
   else:
     c.setFillRule(FillRuleEvenOdd)
-  c.processCommands(path)
+  c.processCommands(path, closeSubpaths, mat)
 
-type Ctx = object
-  fillRule: WindingRule
-  fill, stroke: ColorRGBA
-  strokeWidth: float32
-  strokeLineCap: paths.LineCap
-  strokeLineJoin: paths.LineJoin
-  strokeMiterLimit: float32
-  strokeDashArray: seq[float32]
-  transform: Mat3
-  shouldStroke: bool
+type
+  LinearGradient = object
+    x1, y1, x2, y2: float32
+    stops: seq[ColorStop]
+
+  Ctx = object
+    display: bool
+    fillRule: WindingRule
+    fill: Paint
+    stroke: ColorRGBX
+    strokeWidth: float32
+    strokeLineCap: LineCap
+    strokeLineJoin: LineJoin
+    strokeMiterLimit: float32
+    strokeDashArray: seq[float32]
+    transform: Mat3
+    shouldStroke: bool
+    opacity, strokeOpacity: float32
+    linearGradients: TableRef[string, LinearGradient]
 
 template failInvalid() =
   raise newException(PixieError, "Invalid SVG data")
@@ -115,13 +74,20 @@ proc attrOrDefault(node: XmlNode, name, default: string): string =
     result = default
 
 proc initCtx(): Ctx =
-  result.fill = parseHtmlColor("black").rgba
-  result.stroke = parseHtmlColor("black").rgba
+  result.display = true
+  try:
+    result.fill = parseHtmlColor("black").rgbx
+    result.stroke = parseHtmlColor("black").rgbx
+  except:
+    raise currentExceptionAsPixieError()
   result.strokeWidth = 1
   result.transform = mat3()
   result.strokeMiterLimit = defaultMiterLimit
+  result.opacity = 1
+  result.strokeOpacity = 1
+  result.linearGradients = newTable[string, LinearGradient]()
 
-proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
+proc decodeCtxInternal(inherited: Ctx, node: XmlNode): Ctx =
   result = inherited
 
   proc splitArgs(s: string): seq[string] =
@@ -142,6 +108,10 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
     strokeDashArray = node.attr("stroke-dasharray")
     transform = node.attr("transform")
     style = node.attr("style")
+    display = node.attr("display")
+    opacity = node.attr("opacity")
+    fillOpacity = node.attr("fill-opacity")
+    strokeOpacity = node.attr("stroke-opacity")
 
   let pairs = style.split(';')
   for pair in pairs:
@@ -149,6 +119,9 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
     if parts.len == 2:
       # Do not override element properties
       case parts[0].strip():
+      of "fill-rule":
+        if fillRule.len == 0:
+          fillRule = parts[1].strip()
       of "fill":
         if fill.len == 0:
           fill = parts[1].strip()
@@ -170,13 +143,42 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
       of "stroke-dasharray":
         if strokeDashArray.len == 0:
           strokeDashArray = parts[1].strip()
+      of "display":
+        if display.len == 0:
+          display = parts[1].strip()
+      of "opacity":
+        if opacity.len == 0:
+          opacity = parts[1].strip()
+      of "fillOpacity":
+        if fillOpacity.len == 0:
+          fillOpacity = parts[1].strip()
+      of "strokeOpacity":
+        if strokeOpacity.len == 0:
+          strokeOpacity = parts[1].strip()
+      else:
+        discard
+    elif pair.len > 0:
+      when defined(pixieDebugSvg):
+        echo "Invalid style pair: ", pair
+
+  if display.len > 0:
+    result.display = display.strip() != "none"
+
+  if opacity.len > 0:
+    result.opacity = clamp(parseFloat(opacity), 0, 1)
+
+  if fillOpacity.len > 0:
+    result.fill.opacity = clamp(parseFloat(fillOpacity), 0, 1)
+
+  if strokeOpacity.len > 0:
+    result.strokeOpacity = clamp(parseFloat(strokeOpacity), 0, 1)
 
   if fillRule == "":
     discard # Inherit
   elif fillRule == "nonzero":
-    result.fillRule = wrNonZero
+    result.fillRule = NonZero
   elif fillRule == "evenodd":
-    result.fillRule = wrEvenOdd
+    result.fillRule = EvenOdd
   else:
     raise newException(
       PixieError, "Invalid fill-rule value " & fillRule
@@ -185,18 +187,30 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
   if fill == "" or fill == "currentColor":
     discard # Inherit
   elif fill == "none":
-    result.fill = ColorRGBA()
+    result.fill = ColorRGBX()
+  elif fill.startsWith("url("):
+    let id = fill[5 .. ^2]
+    if id in result.linearGradients:
+      let linearGradient = result.linearGradients[id]
+      result.fill = newPaint(LinearGradientPaint)
+      result.fill.gradientHandlePositions = @[
+        result.transform * vec2(linearGradient.x1, linearGradient.y1),
+        result.transform * vec2(linearGradient.x2, linearGradient.y2)
+      ]
+      result.fill.gradientStops = linearGradient.stops
+    else:
+      raise newException(PixieError, "Missing SVG resource " & id)
   else:
-    result.fill = parseHtmlColor(fill).rgba
+    result.fill = parseHtmlColor(fill).rgbx
 
   if stroke == "":
     discard # Inherit
   elif stroke == "currentColor":
     result.shouldStroke = true
   elif stroke == "none":
-    result.stroke = ColorRGBA()
+    result.stroke = ColorRGBX()
   else:
-    result.stroke = parseHtmlColor(stroke).rgba
+    result.stroke = parseHtmlColor(stroke).rgbx
     result.shouldStroke = true
 
   if strokeWidth == "":
@@ -207,7 +221,7 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
     result.strokeWidth = parseFloat(strokeWidth)
     result.shouldStroke = true
 
-  if result.stroke == ColorRGBA() or result.strokeWidth <= 0:
+  if result.stroke == ColorRGBX() or result.strokeWidth <= 0:
     result.shouldStroke = false
 
   if strokeLineCap == "":
@@ -215,11 +229,11 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
   else:
     case strokeLineCap:
     of "butt":
-      result.strokeLineCap = lcButt
+      result.strokeLineCap = ButtCap
     of "round":
-      result.strokeLineCap = lcRound
+      result.strokeLineCap = RoundCap
     of "square":
-      result.strokeLineCap = lcSquare
+      result.strokeLineCap = SquareCap
     of "inherit":
       discard
     else:
@@ -232,11 +246,11 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
   else:
     case strokeLineJoin:
     of "miter":
-      result.strokeLineJoin = ljMiter
+      result.strokeLineJoin = MiterJoin
     of "round":
-      result.strokeLineJoin = ljRound
+      result.strokeLineJoin = RoundJoin
     of "bevel":
-      result.strokeLineJoin = ljBevel
+      result.strokeLineJoin = BevelJoin
     of "inherit":
       discard
     else:
@@ -261,7 +275,7 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
   else:
     template failInvalidTransform(transform: string) =
       raise newException(
-          PixieError, "Unsupported SVG transform: " & transform & "."
+          PixieError, "Unsupported SVG transform: " & transform
         )
 
     var remaining = transform
@@ -319,38 +333,51 @@ proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
       else:
         failInvalidTransform(transform)
 
-proc cairoLineCap(lineCap: paths.LineCap): cairo.LineCap =
+proc decodeCtx(inherited: Ctx, node: XmlNode): Ctx =
+  try:
+    decodeCtxInternal(inherited, node)
+  except PixieError as e:
+    raise e
+  except:
+    raise currentExceptionAsPixieError()
+
+proc cairoLineCap(lineCap: LineCap): cairo.LineCap =
   case lineCap:
-  of lcButt:
+  of ButtCap:
     LineCapButt
-  of lcRound:
+  of RoundCap:
     LineCapRound
-  of lcSquare:
+  of SquareCap:
     LineCapSquare
 
-proc cairoLineJoin(lineJoin: paths.LineJoin): cairo.LineJoin =
+proc cairoLineJoin(lineJoin: LineJoin): cairo.LineJoin =
   case lineJoin:
-  of ljMiter:
+  of MiterJoin:
     LineJoinMiter
-  of ljBevel:
+  of BevelJoin:
     LineJoinBevel
-  of ljRound:
+  of RoundJoin:
     LineJoinRound
 
 proc fill(c: ptr Context, ctx: Ctx, path: Path) {.inline.} =
-  # img.fillPath(path, ctx.fill, ctx.transform, ctx.fillRule)
-  prepare(c, path, ctx.fill, ctx.transform, ctx.fillRule)
-  c.fill()
+  if ctx.display and ctx.opacity > 0:
+    let paint = newPaint(ctx.fill)
+    paint.opacity = paint.opacity * ctx.opacity
+    prepare(c, path, paint, ctx.transform, true, ctx.fillRule)
+    c.fill()
 
 proc stroke(c: ptr Context, ctx: Ctx, path: Path) {.inline.} =
-  prepare(c, path, ctx.stroke, ctx.transform)
-  c.setLineWidth(ctx.strokeWidth)
-  c.setLineCap(ctx.strokeLineCap.cairoLineCap())
-  c.setLineJoin(ctx.strokeLineJoin.cairoLineJoin())
-  c.setMiterLimit(ctx.strokeMiterLimit)
-  c.stroke()
+  if ctx.display and ctx.opacity > 0:
+    let paint = newPaint(ctx.stroke)
+    paint.color.a *= (ctx.opacity * ctx.strokeOpacity)
+    prepare(c, path, paint, ctx.transform, false)
+    c.setLineWidth(ctx.strokeWidth)
+    c.setLineCap(ctx.strokeLineCap.cairoLineCap())
+    c.setLineJoin(ctx.strokeLineJoin.cairoLineJoin())
+    c.setMiterLimit(ctx.strokeMiterLimit)
+    c.stroke()
 
-proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
+proc drawInternal(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
   if node.kind != xnElement:
     # Skip <!-- comments -->
     return
@@ -363,7 +390,7 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
     let ctx = decodeCtx(ctxStack[^1], node)
     ctxStack.add(ctx)
     for child in node:
-      img.draw(child, ctxStack)
+      img.drawInternal(child, ctxStack)
     discard ctxStack.pop()
 
   of "path":
@@ -371,8 +398,8 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
       d = node.attr("d")
       ctx = decodeCtx(ctxStack[^1], node)
       path = parsePath(d)
-    if ctx.fill != ColorRGBA():
-      img.fill(ctx, path)
+
+    img.fill(ctx, path)
     if ctx.shouldStroke:
       img.stroke(ctx, path)
 
@@ -384,7 +411,7 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
       x2 = parseFloat(node.attrOrDefault("x2", "0"))
       y2 = parseFloat(node.attrOrDefault("y2", "0"))
 
-    var path: Path
+    let path = newPath()
     path.moveTo(x1, y1)
     path.lineTo(x2, y2)
 
@@ -407,13 +434,13 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
       let points = points.split(" ")
       if points.len mod 2 != 0:
         failInvalid()
-      for i in countup(0, points.len - 2, 2):
-        vecs.add(vec2(parseFloat(points[i]), parseFloat(points[i + 1])))
+      for i in 0 ..< points.len div 2:
+        vecs.add(vec2(parseFloat(points[i * 2]), parseFloat(points[i * 2 + 1])))
 
     if vecs.len == 0:
       failInvalid()
 
-    var path: Path
+    let path = newPath()
     path.moveTo(vecs[0])
     for i in 1 ..< vecs.len:
       path.lineTo(vecs[i])
@@ -422,9 +449,7 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
     # and fill or not
     if node.tag == "polygon":
       path.closePath()
-
-      if ctx.fill != ColorRGBA():
-        img.fill(ctx, path)
+      img.fill(ctx, path)
 
     if ctx.shouldStroke:
       img.stroke(ctx, path)
@@ -444,7 +469,7 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
       rx = max(parseFloat(node.attrOrDefault("rx", "0")), 0)
       ry = max(parseFloat(node.attrOrDefault("ry", "0")), 0)
 
-    var path: Path
+    let path = newPath()
     if rx > 0 or ry > 0:
       if rx == 0:
         rx = ry
@@ -465,8 +490,7 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
     else:
       path.rect(x, y, width, height)
 
-    if ctx.fill != ColorRGBA():
-      img.fill(ctx, path)
+    img.fill(ctx, path)
     if ctx.shouldStroke:
       img.stroke(ctx, path)
 
@@ -484,16 +508,23 @@ proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
       rx = parseFloat(node.attrOrDefault("rx", "0"))
       ry = parseFloat(node.attrOrDefault("ry", "0"))
 
-    var path: Path
+    let path = newPath()
     path.ellipse(cx, cy, rx, ry)
 
-    if ctx.fill != ColorRGBA():
-      img.fill(ctx, path)
+    img.fill(ctx, path)
     if ctx.shouldStroke:
       img.stroke(ctx, path)
 
   else:
     raise newException(PixieError, "Unsupported SVG tag: " & node.tag & ".")
+
+proc draw(img: ptr Context, node: XmlNode, ctxStack: var seq[Ctx]) =
+  try:
+    drawInternal(img, node, ctxStack)
+  except PixieError as e:
+    raise e
+  except:
+    raise currentExceptionAsPixieError()
 
 proc decodeSvg*(data: string, width = 0, height = 0): Image =
   ## Render SVG file and return the image. Defaults to the SVG's view box size.
@@ -518,20 +549,20 @@ proc decodeSvg*(data: string, width = 0, height = 0): Image =
         vec2(-viewBoxMinX.float32, -viewBoxMinY.float32)
       )
 
-    var surface: ptr Surface
+    var
+      width = width
+      height = height
+      surface: ptr Surface
     if width == 0 and height == 0: # Default to the view box size
-      result = newImage(viewBoxWidth, viewBoxHeight)
-      surface = imageSurfaceCreate(
-        FORMAT_ARGB32, viewBoxWidth.int32, viewBoxHeight.int32
-      )
+      width = viewBoxWidth.int32
+      height = viewBoxHeight.int32
     else:
-      result = newImage(width, height)
-      surface = imageSurfaceCreate(FORMAT_ARGB32, width.int32, height.int32)
-
       let
         scaleX = width.float32 / viewBoxWidth.float32
         scaleY = height.float32 / viewBoxHeight.float32
       rootCtx.transform = rootCtx.transform * scale(vec2(scaleX, scaleY))
+
+    surface = imageSurfaceCreate(FORMAT_ARGB32, width.int32, height.int32)
 
     let c = surface.create()
 
@@ -541,13 +572,15 @@ proc decodeSvg*(data: string, width = 0, height = 0): Image =
 
     surface.flush()
 
+    result = newImage(width, height)
+
     let pixels = cast[ptr UncheckedArray[array[4, uint8]]](surface.getData())
     for y in 0 ..< result.height:
       for x in 0 ..< result.width:
         let
           bgra = pixels[result.dataIndex(x, y)]
           rgba = rgba(bgra[2], bgra[1], bgra[0], bgra[3])
-        result.setRgbaUnsafe(x, y, rgba.rgbx())
+        result.unsafe[x, y] = rgba.rgbx()
   except PixieError as e:
     raise e
   except:

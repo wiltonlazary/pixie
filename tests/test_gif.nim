@@ -1,13 +1,46 @@
 import pixie, pixie/fileformats/gif
 
-var img = decodeGIF(readFile("tests/images/gif/3x5.gif"))
-img.writeFile("tests/images/gif/3x5.png")
+block:
+  let
+    path = "tests/fileformats/gif/3x5.gif"
+    image = readImage(path)
+    dimensions = decodeGifDimensions(readFile(path))
+  image.writeFile("tests/fileformats/gif/3x5.png")
+  doAssert image.width == dimensions.width
+  doAssert image.height == dimensions.height
 
-var img2 = decodeGIF(readFile("tests/images/gif/audrey.gif"))
-img2.writeFile("tests/images/gif/audrey.png")
+block:
+  let
+    path = "tests/fileformats/gif/audrey.gif"
+    image = readImage(path)
+    dimensions = decodeGifDimensions(readFile(path))
+  image.writeFile("tests/fileformats/gif/audrey.png")
+  doAssert image.width == dimensions.width
+  doAssert image.height == dimensions.height
 
-var img3 = decodeGIF(readFile("tests/images/gif/sunflower.gif"))
-img3.writeFile("tests/images/gif/sunflower.png")
+block:
+  let
+    path = "tests/fileformats/gif/sunflower.gif"
+    image = readImage(path)
+    dimensions = decodeGifDimensions(readFile(path))
+  image.writeFile("tests/fileformats/gif/sunflower.png")
+  doAssert image.width == dimensions.width
+  doAssert image.height == dimensions.height
 
-var img4 = readImage("tests/images/gif/sunflower.gif")
-doAssert img3.data == img4.data
+block:
+  let
+    path = "tests/fileformats/gif/sunflower.gif"
+    image = readImage(path)
+    dimensions = decodeGifDimensions(readFile(path))
+  image.writeFile("tests/fileformats/gif/sunflower.png")
+  doAssert image.width == dimensions.width
+  doAssert image.height == dimensions.height
+
+block:
+  let img4 = readImage("tests/fileformats/gif/newtons_cradle.gif")
+  img4.writeFile("tests/fileformats/gif/newtons_cradle.png")
+
+  let animatedGif =
+    decodeGif(readFile("tests/fileformats/gif/newtons_cradle.gif"))
+  doAssert animatedGif.frames.len == 36
+  doAssert animatedGif.intervals.len == animatedGif.frames.len

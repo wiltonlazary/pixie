@@ -23,10 +23,10 @@ block:
   doAssert image[9, 9] == rgba(128, 0, 0, 128)
 
 block:
-  let image = newImage(10, 10)
-  image.fill(rgba(128, 0, 0, 128))
-  image.data.toStraightAlpha()
-  doAssert image[9, 9] == rgba(254, 0, 0, 128)
+  var data = newSeq[ColorRGBX](100)
+  fillUnsafe(data, rgbx(100, 0, 0, 128), 0, data.len)
+  data.toStraightAlpha()
+  doAssert data[10] == rgbx(199, 0, 0, 128)
 
 block:
   let image = newImage(100, 100)
@@ -43,7 +43,7 @@ block:
   a.fill(rgba(255, 0, 0, 255))
   b.fill(rgba(0, 255, 0, 255))
 
-  a.draw(b, vec2(0, 0))
+  a.draw(b)
 
   a.writeFile("tests/images/flipped1.png")
   a.flipVertical()
@@ -113,9 +113,9 @@ block:
 
 block:
   let
-    a = readImage("tests/images/png/baboon.png")
+    a = readImage("tests/fileformats/png/mandrill.png")
     b = a.minifyBy2()
-  b.writeFile("tests/images/minifiedBaboon.png")
+  b.writeFile("tests/images/minifiedMandrill.png")
 
 block:
   let a = newImage(100, 100)
@@ -144,8 +144,8 @@ block: # Test conversion between image and mask
     originalImage = newImage(100, 100)
     originalMask = newMask(100, 100)
 
-  var p: Path
-  p.rect(10, 10, 80, 80)
+  let p = newPath()
+  p.circle(50, 50, 25)
 
   originalImage.fillPath(p, rgba(255, 0, 0, 255))
   originalMask.fillPath(p)
@@ -157,10 +157,72 @@ block: # Test conversion between image and mask
   doAssert newImage(newMask(originalImage)).data == newImage(originalMask).data
 
 block:
-  var p: Path
+  let p = newPath()
   p.roundedRect(10, 10, 80, 80, 10, 10, 10, 10)
 
   let image = newImage(100, 100)
   image.fillPath(p, rgba(255, 0, 0, 255))
 
   newImage(newMask(image)).writeFile("tests/images/mask2image.png")
+
+block:
+  let image = newImage(100, 100)
+  doAssert image.isOneColor()
+
+block:
+  let image = newImage(100, 100)
+  image.fill(rgba(255, 255, 255, 255))
+  doAssert image.isOneColor()
+
+block:
+  let image = newImage(100, 100)
+  image.fill(rgba(1, 2, 3, 4))
+  doAssert image.isOneColor()
+
+block:
+  let image = newImage(100, 100)
+  image[99, 99] = rgba(255, 255, 255, 255)
+  doAssert not image.isOneColor()
+
+block:
+  let image = newImage(100, 100)
+  doAssert image.isTransparent()
+
+block:
+  let image = newImage(100, 100)
+  image.fill(rgba(255, 255, 255, 0))
+  doAssert image.isTransparent()
+
+block:
+  let image = newImage(100, 100)
+  image[99, 99] = rgba(255, 255, 255, 255)
+  doAssert not image.isTransparent()
+
+block:
+  let image = newImage(100, 100)
+  image.fill(rgba(255, 255, 255, 255))
+  doAssert not image.isTransparent()
+
+block:
+  let image = newImage(100, 100)
+  image.fill(rgba(255, 255, 255, 255))
+  doAssert image.isOpaque()
+
+block:
+  let image = newImage(100, 100)
+  image.fill(rgba(255, 255, 255, 255))
+  image[9, 13] = rgbx(250, 250, 250, 250)
+  doAssert not image.isOpaque()
+
+block:
+  let a = newImage(400, 400)
+  let b = newImage(156, 434)
+  b.fill(rgba(255, 0, 0, 255))
+  a.draw(
+    b,
+    mat3(
+      -0.5, -4.371138828673793e-008, 0.0,
+      -4.371138828673793e-008, 0.5, 0.0,
+      292.0, 45.0, 1.0
+    )
+  )

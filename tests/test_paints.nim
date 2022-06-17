@@ -1,4 +1,4 @@
-import chroma, pixie, pixie/fileformats/png, vmath
+import chroma, pixie, vmath
 
 const heartShape = """
     M 10,30
@@ -12,91 +12,123 @@ block:
   let image = newImage(100, 100)
   image.fillPath(
     heartShape,
-    Paint(
-      kind: pkSolid,
-      color: rgba(255, 0, 0, 255)
-    )
+    rgba(255, 0, 0, 255)
   )
-  image.writeFile("tests/images/paths/paintSolid.png")
+  image.writeFile("tests/paths/paintSolid.png")
 
 block:
+  let paint = newPaint(ImagePaint)
+  paint.image = readImage("tests/fileformats/png/mandrill.png")
+  paint.imageMat = scale(vec2(0.2, 0.2))
+
   let image = newImage(100, 100)
-  image.fillPath(
-    heartShape,
-    Paint(
-      kind: pkImage,
-      image: decodePng(readFile("tests/images/png/baboon.png")),
-      imageMat: scale(vec2(0.2, 0.2))
-    )
-  )
-  image.writeFile("tests/images/paths/paintImage.png")
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/paintImage.png")
 
 block:
+  let paint = newPaint(ImagePaint)
+  paint.image = readImage("tests/fileformats/png/mandrill.png")
+  paint.imageMat = scale(vec2(0.2, 0.2))
+  paint.opacity = 0.5
+
   let image = newImage(100, 100)
-  image.fillPath(
-    heartShape,
-    Paint(
-      kind: pkImageTiled,
-      image: decodePng(readFile("tests/images/png/baboon.png")),
-      imageMat: scale(vec2(0.02, 0.02))
-    )
-  )
-  image.writeFile("tests/images/paths/paintImageTiled.png")
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/paintImageOpacity.png")
 
 block:
+  let paint = newPaint(TiledImagePaint)
+  paint.image = readImage("tests/fileformats/png/mandrill.png")
+  paint.imageMat = scale(vec2(0.02, 0.02))
+
   let image = newImage(100, 100)
-  image.fillPath(
-    heartShape,
-    Paint(
-      kind: pkGradientLinear,
-      gradientHandlePositions: @[
-        vec2(0, 50),
-        vec2(100, 50),
-    ],
-    gradientStops: @[
-      ColorStop(color: rgba(255, 0, 0, 255), position: 0),
-      ColorStop(color: rgba(255, 0, 0, 40), position: 1.0),
-    ]
-  )
-  )
-  image.writeFile("tests/images/paths/gradientLinear.png")
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/paintImageTiled.png")
 
 block:
-  let image = newImage(100, 100)
-  image.fillPath(
-    heartShape,
-    Paint(
-      kind: pkGradientRadial,
-      gradientHandlePositions: @[
-        vec2(50, 50),
-        vec2(100, 50),
-        vec2(50, 100)
-    ],
-    gradientStops: @[
-      ColorStop(color: rgba(255, 0, 0, 255), position: 0),
-      ColorStop(color: rgba(255, 0, 0, 40), position: 1.0),
-    ]
-  )
-  )
+  let paint = newPaint(TiledImagePaint)
+  paint.image = readImage("tests/fileformats/png/mandrill.png")
+  paint.imageMat = scale(vec2(0.02, 0.02))
+  paint.opacity = 0.5
 
-  image.writeFile("tests/images/paths/gradientRadial.png")
+  let image = newImage(100, 100)
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/paintImageTiledOpacity.png")
 
 block:
-  let image = newImage(100, 100)
-  image.fillPath(
-    heartShape,
-    Paint(
-      kind: pkGradientAngular,
-      gradientHandlePositions: @[
-        vec2(50, 50),
-        vec2(100, 50),
-        vec2(50, 100)
-    ],
-    gradientStops: @[
-      ColorStop(color: rgba(255, 0, 0, 255), position: 0),
-      ColorStop(color: rgba(255, 0, 0, 40), position: 1.0),
-    ]
-  )
-  )
+  let paint = newPaint(LinearGradientPaint)
+  paint.gradientHandlePositions = @[
+    vec2(0, 50),
+    vec2(100, 50),
+  ]
+  paint.gradientStops = @[
+    ColorStop(color: color(1, 0, 0, 1), position: 0),
+    ColorStop(color: color(1, 0, 0, 0.15625), position: 1.0),
+  ]
 
-  image.writeFile("tests/images/paths/gradientAngular.png")
+  let image = newImage(100, 100)
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/gradientLinear.png")
+
+block:
+  let paint = newPaint(LinearGradientPaint)
+  paint.gradientHandlePositions = @[
+    vec2(50, 0),
+    vec2(50, 100),
+  ]
+  paint.gradientStops = @[
+    ColorStop(color: color(1, 0, 0, 1), position: 0),
+    ColorStop(color: color(1, 0, 0, 0.15625), position: 1.0),
+  ]
+
+  let image = newImage(100, 100)
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/gradientLinear2.png")
+
+block:
+  let paint = newPaint(RadialGradientPaint)
+  paint.gradientHandlePositions = @[
+    vec2(50, 50),
+    vec2(100, 50),
+    vec2(50, 100)
+  ]
+  paint.gradientStops = @[
+    ColorStop(color: color(1, 0, 0, 1), position: 0),
+    ColorStop(color: color(1, 0, 0, 0.15625), position: 1.0),
+  ]
+
+  let image = newImage(100, 100)
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/gradientRadial.png")
+
+block:
+  let paint = newPaint(AngularGradientPaint)
+  paint.gradientHandlePositions = @[
+    vec2(50, 50),
+    vec2(100, 50),
+    vec2(50, 100)
+  ]
+  paint.gradientStops = @[
+    ColorStop(color: color(1, 0, 0, 1), position: 0),
+    ColorStop(color: color(1, 0, 0, 0.15625), position: 1.0),
+  ]
+
+  let image = newImage(100, 100)
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/gradientAngular.png")
+
+block:
+  let paint = newPaint(AngularGradientPaint)
+  paint.gradientHandlePositions = @[
+    vec2(50, 50),
+    vec2(100, 50),
+    vec2(50, 100)
+  ]
+  paint.gradientStops = @[
+    ColorStop(color: color(1, 0, 0, 1), position: 0),
+    ColorStop(color: color(1, 0, 0, 0.15625), position: 1.0),
+  ]
+  paint.opacity = 0.5
+
+  let image = newImage(100, 100)
+  image.fillPath(heartShape, paint)
+  image.writeFile("tests/paths/gradientAngularOpacity.png")

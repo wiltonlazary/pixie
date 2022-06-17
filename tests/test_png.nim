@@ -1,17 +1,10 @@
 import pixie, pixie/fileformats/png, pngsuite, strformat
 
-# for file in pngSuiteFiles:
-#   let
-#     original = cast[seq[uint8]](
-#       readFile(&"tests/images/png/pngsuite/{file}.png")
-#     )
-#     decoded = decodePng(original)
-#     encoded = encodePng(decoded)
-#     decoded2 = decodePng(cast[seq[uint8]](encoded))
-
-#   doAssert decoded.height == decoded2.height
-#   doAssert decoded.width == decoded2.width
-#   doAssert decoded.data == decoded2.data
+for file in pngSuiteFiles:
+  let
+    original = readFile(&"tests/fileformats/png/pngsuite/{file}.png")
+    decoded = decodePng(original)
+    encoded = encodePng(decoded)
 
 block:
   for channels in 1 .. 4:
@@ -26,10 +19,16 @@ block:
 
   for file in pngSuiteCorruptedFiles:
     try:
-      discard decodePng(readFile(&"tests/images/png/pngsuite/{file}.png"))
+      discard decodePng(readFile(&"tests/fileformats/png/pngsuite/{file}.png"))
       doAssert false
     except PixieError:
       discard
 
 block:
-  discard readImage("tests/images/png/trailing_data.png")
+  discard readImage("tests/fileformats/png/trailing_data.png")
+
+block:
+  let dimensions =
+    decodeImageDimensions(readFile("tests/fileformats/png/mandrill.png"))
+  doAssert dimensions.width == 512
+  doAssert dimensions.height == 512

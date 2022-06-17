@@ -28,11 +28,11 @@ timeIt "blendMultiply":
   for i in 0 ..< backdrop.data.len:
     backdrop.data[i] = blendMultiply(backdrop.data[i], source.data[i])
 
-reset()
+# reset()
 
-timeIt "blendLinearBurn":
-  for i in 0 ..< backdrop.data.len:
-    backdrop.data[i] = blendLinearBurn(backdrop.data[i], source.data[i])
+# timeIt "blendLinearBurn":
+#   for i in 0 ..< backdrop.data.len:
+#     backdrop.data[i] = blendLinearBurn(backdrop.data[i], source.data[i])
 
 reset()
 
@@ -52,11 +52,11 @@ timeIt "blendScreen":
   for i in 0 ..< backdrop.data.len:
     backdrop.data[i] = blendScreen(backdrop.data[i], source.data[i])
 
-reset()
+# reset()
 
-timeIt "blendLinearDodge":
-  for i in 0 ..< backdrop.data.len:
-    backdrop.data[i] = blendLinearDodge(backdrop.data[i], source.data[i])
+# timeIt "blendLinearDodge":
+#   for i in 0 ..< backdrop.data.len:
+#     backdrop.data[i] = blendLinearDodge(backdrop.data[i], source.data[i])
 
 reset()
 
@@ -132,12 +132,6 @@ timeIt "blendSubtractMask":
 
 reset()
 
-timeIt "blendIntersectMask":
-  for i in 0 ..< backdrop.data.len:
-    backdrop.data[i] = blendIntersectMask(backdrop.data[i], source.data[i])
-
-reset()
-
 timeIt "blendExcludeMask":
   for i in 0 ..< backdrop.data.len:
     backdrop.data[i] = blendExcludeMask(backdrop.data[i], source.data[i])
@@ -148,8 +142,10 @@ when defined(amd64) and not defined(pixieNoSimd):
   reset()
 
   timeIt "blendNormal [simd]":
-    for i in countup(0, backdrop.data.len - 4, 4):
+    var i: int
+    while i < backdrop.data.len - 4:
       let
         b = mm_loadu_si128(backdrop.data[i].addr)
         s = mm_loadu_si128(source.data[i].addr)
       mm_storeu_si128(backdrop.data[i].addr, blendNormalSimd(b, s))
+      i += 4

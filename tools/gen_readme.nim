@@ -1,4 +1,4 @@
-import algorithm, os, osproc, sequtils, strutils
+import os, osproc, strutils
 
 proc cutBetween(str, a, b: string): string =
   let
@@ -26,13 +26,13 @@ var exampleFiles = [
 ]
 
 for path in exampleFiles:
-  discard execCmd("nim c -r -d:danger " & path)
+  discard execCmd("nim c -r " & path)
   let code = readFile(path)
   let innerCode = code.cutBetween("image.fill(rgba(255, 255, 255, 255))", "image.writeFile")
   if innerCode != "":
     let path = path.replace("\\", "/")
     md.add "### " & path.splitFile().name.replace("_", " ").capitalizeAscii()
-    md.add "[" & path & "](" & path & ")"
+    md.add "nim c -r [" & path & "](" & path & ")"
     md.add "```nim"
     md.add innerCode.strip()
     md.add "```"
@@ -46,6 +46,7 @@ let at = readme.find("## Examples")
 if at != -1:
   readme = readme[0 .. at]
 readme.add("# Examples\n\n")
+readme.add("`git clone https://github.com/treeform/pixie` to run examples.\n\n")
 readme.add(md.join("\n"))
 
 writeFile("README.md", readme)

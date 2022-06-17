@@ -13,15 +13,24 @@ const files = [
   "Ghostscript_Tiger",
   "scale",
   "miterlimit",
-  "dashes"
+  "dashes",
+  "dragon2"
 ]
 
-for file in files:
+proc doDiff(rendered: Image, name: string) =
+  rendered.writeFile(&"tests/fileformats/svg/rendered/{name}.png")
   let
-    original = readFile(&"tests/images/svg/{file}.svg")
-    image = decodeSvg(original)
-    gold = readImage(&"tests/images/svg/{file}.png")
+    master = readImage(&"tests/fileformats/svg/masters/{name}.png")
+    (diffScore, diffImage) = diff(master, rendered)
+  echo &"{name} score: {diffScore}"
+  diffImage.writeFile(&"tests/fileformats/svg/diffs/{name}.png")
 
-  let (score, _) = diff(image, gold)
-  doAssert score < 1
-  image.writeFile(&"tests/images/svg/{file}.png")
+for file in files:
+  doDiff(readImage(&"tests/fileformats/svg/{file}.svg"), file)
+
+block:
+  let svg = parseSvg(
+    readFile("tests/fileformats/svg/accessibility-outline.svg"),
+    512, 512
+  )
+  doDiff(newImage(svg), "accessibility-outline")

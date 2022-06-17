@@ -1,8 +1,9 @@
-import bumpy, chroma, pixie/fontformats/opentype, pixie/fontformats/svgfont,
-    pixie/images, pixie/masks, pixie/paints, pixie/paths, unicode, vmath
+import bumpy, chroma, common, os, pixie/fontformats/opentype,
+    pixie/fontformats/svgfont, pixie/images, pixie/masks, pixie/paints,
+    pixie/paths, strutils, unicode, vmath
 
 const
-  AutoLineHeight* = -1.float32 ## Use default line height for the font size
+  autoLineHeight*: float32 = -1 ## Use default line height for the font size
   LF = Rune(10)
   SP = Rune(32)
 
@@ -11,12 +12,13 @@ type
     opentype: OpenType
     svgFont: SvgFont
     filePath*: string
+    fallbacks*: seq[Typeface]
 
-  Font* = object
+  Font* = ref object
     typeface*: Typeface
     size*: float32              ## Font size in pixels.
-    lineHeight*: float32 ## The line height in pixels or AutoLineHeight for the font's default line height.
-    paint*: Paint
+    lineHeight*: float32 ## The line height in pixels or autoLineHeight for the font's default line height.
+    paints*: seq[Paint]
     textCase*: TextCase
     underline*: bool            ## Apply an underline.
     strikethrough*: bool        ## Apply a strikethrough.
@@ -34,101 +36,184 @@ type
     positions*: seq[Vec2]      ## The positions of the glyphs for each rune.
     selectionRects*: seq[Rect] ## The selection rects for each glyph.
 
-  HAlignMode* = enum
-    haLeft
-    haCenter
-    haRight
+  HorizontalAlignment* = enum
+    LeftAlign
+    CenterAlign
+    RightAlign
 
-  VAlignMode* = enum
-    vaTop
-    vaMiddle
-    vaBottom
+  VerticalAlignment* = enum
+    TopAlign
+    MiddleAlign
+    BottomAlign
 
   TextCase* = enum
-    tcNormal
-    tcUpper
-    tcLower
-    tcTitle
+    NormalCase
+    UpperCase
+    LowerCase
+    TitleCase
     # tcSmallCaps
     # tcSmallCapsForced
 
-proc ascent*(typeface: Typeface): float32 {.inline.} =
+proc scale*(typeface: Typeface): float32 {.inline, raises: [].} =
+  ## The scale factor to transform font units into pixels.
+  if typeface.opentype != nil:
+    typeface.opentype.head.unitsPerEm.float32
+  else:
+    typeface.svgFont.unitsPerEm
+
+proc ascent*(typeface: Typeface): float32 {.raises: [].} =
   ## The font ascender value in font units.
   if typeface.opentype != nil:
     typeface.opentype.hhea.ascender.float32
   else:
     typeface.svgFont.ascent
 
-proc descent*(typeface: Typeface): float32 {.inline.} =
+proc descent*(typeface: Typeface): float32 {.raises: [].} =
   ## The font descender value in font units.
   if typeface.opentype != nil:
     typeface.opentype.hhea.descender.float32
   else:
     typeface.svgFont.descent
 
-proc lineGap*(typeface: Typeface): float32 {.inline.} =
+proc lineGap*(typeface: Typeface): float32 {.raises: [].} =
   ## The font line gap value in font units.
   if typeface.opentype != nil:
     result = typeface.opentype.hhea.lineGap.float32
 
-proc lineHeight*(typeface: Typeface): float32 {.inline.} =
+proc lineHeight*(typeface: Typeface): float32 {.inline, raises: [].} =
   ## The default line height in font units.
+  # The descent is negative number, so this is really ascent + descent + lineGap.
   typeface.ascent - typeface.descent + typeface.lineGap
 
-proc underlinePosition(typeface: Typeface): float32 {.inline.} =
+proc underlinePosition(typeface: Typeface): float32 =
   if typeface.opentype != nil:
     result = typeface.opentype.post.underlinePosition.float32
 
-proc underlineThickness(typeface: Typeface): float32 {.inline.} =
+proc underlineThickness(typeface: Typeface): float32 =
   if typeface.opentype != nil:
     result = typeface.opentype.post.underlineThickness.float32
 
-proc strikeoutPosition(typeface: Typeface): float32 {.inline.} =
+proc strikeoutPosition(typeface: Typeface): float32 =
   if typeface.opentype != nil:
     result = typeface.opentype.os2.yStrikeoutPosition.float32
 
-proc strikeoutThickness(typeface: Typeface): float32 {.inline.} =
+proc strikeoutThickness(typeface: Typeface): float32 =
   if typeface.opentype != nil:
     result = typeface.opentype.os2.yStrikeoutSize.float32
 
-proc getGlyphPath*(typeface: Typeface, rune: Rune): Path {.inline.} =
-  ## The glyph path for the rune.
-  if rune.uint32 > SP.uint32: # Empty paths for control runes (not tofu)
-    if typeface.opentype != nil:
-      result = typeface.opentype.getGlyphPath(rune)
-    else:
-      result = typeface.svgFont.getGlyphPath(rune)
-
-proc getAdvance*(typeface: Typeface, rune: Rune): float32 {.inline.} =
-  ## The advance for the rune in pixels.
+proc isCCW(typeface: Typeface): bool {.inline.} =
+  ## Returns the expected winding order of a font.
   if typeface.opentype != nil:
-    typeface.opentype.getAdvance(rune)
+    return typeface.opentype.isCCW()
+
+proc hasGlyph*(typeface: Typeface, rune: Rune): bool {.inline.} =
+  ## Returns if there is a glyph for this rune.
+  if typeface.opentype != nil:
+    typeface.opentype.hasGlyph(rune)
   else:
-    typeface.svgFont.getAdvance(rune)
+    typeface.svgFont.hasGlyph(rune)
+
+proc fallbackTypeface*(typeface: Typeface, rune: Rune): Typeface =
+  ## Looks through fallback typefaces to find one that has the glyph.
+  if typeface.hasGlyph(rune):
+    return typeface
+  for fallback in typeface.fallbacks:
+    let typeface = fallback.fallbackTypeface(rune)
+    if typeface != nil:
+      return typeface
+
+proc getGlyphPath*(
+  typeface: Typeface, rune: Rune
+): Path {.inline, raises: [PixieError].} =
+  ## The glyph path for the rune.
+  result = newPath()
+
+  let typeface2 = typeface.fallbackTypeface(rune)
+  if typeface2 == nil:
+    return
+
+  if typeface2.opentype != nil:
+    result.addPath(typeface2.opentype.getGlyphPath(rune))
+  else:
+    result.addPath(typeface2.svgFont.getGlyphPath(rune))
+
+  # Apply typeface ratio.
+  let ratio = typeface.scale / typeface2.scale
+  if ratio != 1.0:
+    result.transform(scale(vec2(ratio, ratio)))
+
+proc getAdvance*(typeface: Typeface, rune: Rune): float32 {.inline, raises: [].} =
+  ## The advance for the rune in pixels.
+  var typeface2 = typeface.fallbackTypeface(rune)
+  if typeface2 == nil:
+    # Get tofu advance, see tofu_advance test.
+    typeface2 = typeface
+
+  if typeface2.opentype != nil:
+    result = typeface2.opentype.getAdvance(rune)
+  else:
+    result = typeface2.svgFont.getAdvance(rune)
+
+  # Apply typeface ratio.
+  result *= typeface.scale / typeface2.scale
 
 proc getKerningAdjustment*(
   typeface: Typeface, left, right: Rune
-): float32 {.inline.} =
+): float32 {.inline, raises: [].} =
   ## The kerning adjustment for the rune pair, in pixels.
-  if typeface.opentype != nil:
-    typeface.opentype.getKerningAdjustment(left, right)
-  else:
-    typeface.svgfont.getKerningAdjustment(left, right)
+  let
+    typefaceRight = typeface.fallbackTypeface(right)
+    typefaceLeft = typeface.fallbackTypeface(left)
+  # Is there a type face that matches?
+  if typefaceRight == nil or typefaceLeft == nil:
+    return
+  # Only do kerning if both typefaces are the same.
+  if typefaceRight == typefaceLeft:
+    if typefaceRight.opentype != nil:
+      result = typefaceRight.opentype.getKerningAdjustment(left, right)
+    else:
+      result = typefaceRight.svgfont.getKerningAdjustment(left, right)
 
-proc scale*(font: Font): float32 {.inline.} =
+    # Apply typeface ratio.
+    result *= typeface.scale / typefaceRight.scale
+
+proc scale*(font: Font): float32 {.inline, raises: [].} =
   ## The scale factor to transform font units into pixels.
-  if font.typeface.opentype != nil:
-    font.size / font.typeface.opentype.head.unitsPerEm.float32
-  else:
-    font.size / font.typeface.svgFont.unitsPerEm
+  font.size / font.typeface.scale
 
-proc defaultLineHeight*(font: Font): float32 {.inline.} =
+proc defaultLineHeight*(font: Font): float32 {.inline, raises: [].} =
   ## The default line height in pixels for the current font size.
   let fontUnits =
     font.typeface.ascent - font.typeface.descent + font.typeface.lineGap
   round(fontUnits * font.scale)
 
-proc newSpan*(text: string, font: Font): Span =
+proc lineGap(font: Font): float32 =
+  ## The line gap in font units for the current font size and line-height.
+  let lineHeight =
+    if font.lineHeight >= 0:
+      font.lineHeight
+    else:
+      font.defaultLineHeight
+  if lineHeight == font.defaultLineHeight:
+    font.typeface.lineGap
+  else:
+    (lineHeight / font.scale) - font.typeface.ascent + font.typeface.descent
+
+proc paint*(font: Font): Paint {.inline, raises: [].} =
+  font.paints[0]
+
+proc `paint=`*(font: Font, paint: Paint) {.inline, raises: [].} =
+  font.paints = @[paint]
+
+proc newFont*(typeface: Typeface): Font {.raises: [].} =
+  result = Font()
+  result.typeface = typeface
+  result.size = 12
+  result.lineHeight = autoLineHeight
+  result.paint = newPaint(SolidPaint)
+  result.paint.color = color(0, 0, 0, 1)
+
+proc newSpan*(text: string, font: Font): Span {.raises: [].} =
   ## Creates a span, associating a font with the text.
   result = Span()
   result.text = text
@@ -136,15 +221,15 @@ proc newSpan*(text: string, font: Font): Span =
 
 proc convertTextCase(runes: var seq[Rune], textCase: TextCase) =
   case textCase:
-  of tcNormal:
+  of NormalCase:
     discard
-  of tcUpper:
+  of UpperCase:
     for rune in runes.mitems:
       rune = rune.toUpper()
-  of tcLower:
+  of LowerCase:
     for rune in runes.mitems:
       rune = rune.toLower()
-  of tcTitle:
+  of TitleCase:
     var prevRune = SP
     for rune in runes.mitems:
       if prevRune.isWhiteSpace:
@@ -157,10 +242,10 @@ proc canWrap(rune: Rune): bool {.inline.} =
 proc typeset*(
   spans: seq[Span],
   bounds = vec2(0, 0),
-  hAlign = haLeft,
-  vAlign = vaTop,
+  hAlign = LeftAlign,
+  vAlign = TopAlign,
   wrap = true
-): Arrangement =
+): Arrangement {.raises: [].} =
   ## Lays out the character glyphs and returns the arrangement.
   ## Optional parameters:
   ## bounds: width determines wrapping and hAlign, height for vAlign
@@ -239,6 +324,7 @@ proc typeset*(
                 result.selectionRects[i].xy = vec2(at.x, at.y)
                 at.x += advance(font, result.runes, i)
                 dec lineStart
+              prevCanWrap = 0
 
             result.lines[^1][1] = lineStart - 1
             result.lines.add((lineStart, 0))
@@ -252,7 +338,7 @@ proc typeset*(
 
     result.lines[^1][1] = result.runes.len - 1
 
-    if hAlign != haLeft:
+    if hAlign != LeftAlign:
       # Since horizontal alignment adjustments are different for each line,
       # find the start and stop of each line of text.
       for (start, stop) in result.lines:
@@ -264,30 +350,17 @@ proc typeset*(
 
         var xAdjustment: float32
         case hAlign:
-          of haLeft:
+          of LeftAlign:
             discard
-          of haCenter:
+          of CenterAlign:
             xAdjustment = (bounds.x - furthestX) / 2
-          of haRight:
+          of RightAlign:
             xAdjustment = bounds.x - furthestX
 
         if xAdjustment != 0:
           for i in start .. stop:
             result.positions[i].x += xAdjustment
             result.selectionRects[i].x += xAdjustment
-
-    block: # Nudge selection rects to pixel grid
-      var at = result.selectionRects[0]
-      at.x = round(at.x)
-      for rect in result.selectionRects.mitems:
-        if rect.y == at.y:
-          rect.x = at.x
-          rect.w = round(rect.w)
-          at.x = rect.x + rect.w
-        else:
-          rect.w = round(rect.w)
-          at.x = rect.w
-          at.y = rect.y
 
   block: # Arrange the lines vertically
     let initialY = block:
@@ -296,20 +369,10 @@ proc typeset*(
         for spanIndex, (start, stop) in result.spans:
           let
             font = result.fonts[spanIndex]
-            lineHeight =
-              if font.lineheight >= 0:
-                font.lineheight
-              else:
-                font.defaultLineHeight
-          var fontUnitInitialY = font.typeface.ascent + font.typeface.lineGap / 2
-          if lineHeight != font.defaultLineHeight:
-            fontUnitInitialY += (
-              (lineHeight / font.scale) - font.typeface.lineHeight
-            ) / 2
+            fontUnitInitialY = font.typeface.ascent + font.lineGap / 2
           maxInitialY = max(maxInitialY, round(fontUnitInitialY * font.scale))
-          for runeIndex in start .. stop:
-            if runeIndex == result.lines[0][1]:
-              break outer
+          if stop >= result.lines[0][1]:
+            break outer
       maxInitialY
 
     var lineHeights = newSeq[float32](result.lines.len)
@@ -319,12 +382,14 @@ proc typeset*(
         let
           font = result.fonts[spanIndex]
           fontLineHeight =
-            if font.lineheight >= 0:
-              font.lineheight
+            if font.lineHeight >= 0:
+              font.lineHeight
             else:
               font.defaultLineHeight
         lineHeights[line] = max(lineHeights[line], fontLineHeight)
         for runeIndex in start .. stop:
+          # This span could be many lines. This check can be made faster by
+          # hopping based on line endings instead of checking each index.
           if line + 1 < result.lines.len and
             runeIndex == result.lines[line + 1][0]:
             inc line
@@ -341,8 +406,8 @@ proc typeset*(
         let
           font = result.fonts[spanIndex]
           lineHeight =
-            if font.lineheight >= 0:
-              font.lineheight
+            if font.lineHeight >= 0:
+              font.lineHeight
             else:
               font.defaultLineHeight
         for runeIndex in start .. stop:
@@ -351,22 +416,22 @@ proc typeset*(
             inc line
             baseline += lineHeights[line]
           result.positions[runeIndex].y = baseline
-          result.selectionRects[runeIndex].y =
-            baseline - round(font.typeface.ascent * font.scale)
+          result.selectionRects[runeIndex].y = baseline -
+            round((font.typeface.ascent + font.lineGap / 2) * font.scale)
           result.selectionRects[runeIndex].h = lineHeight
 
-    if vAlign != vaTop:
+    if vAlign != TopAlign:
       let
         finalSelectionRect = result.selectionRects[^1]
         furthestY = finalSelectionRect.y + finalSelectionRect.h
 
       var yAdjustment: float32
       case vAlign:
-        of vaTop:
+        of TopAlign:
           discard
-        of vaMiddle:
+        of MiddleAlign:
           yAdjustment = round((bounds.y - furthestY) / 2)
-        of vaBottom:
+        of BottomAlign:
           yAdjustment = bounds.y - furthestY
 
       if yAdjustment != 0:
@@ -374,14 +439,26 @@ proc typeset*(
           result.positions[i].y += yAdjustment
           result.selectionRects[i].y += yAdjustment
 
+  block: # Nudge selection rects to pixel grid
+    for rect in result.selectionRects.mitems:
+      let
+        minX = round(rect.x)
+        maxX = round(rect.x + rect.w)
+        minY = round(rect.y)
+        maxY = round(rect.y + rect.h)
+      rect.x = minX
+      rect.w = maxX - minX
+      rect.y = minY
+      rect.h = maxY - minY
+
 proc typeset*(
   font: Font,
   text: string,
   bounds = vec2(0, 0),
-  hAlign = haLeft,
-  vAlign = vaTop,
+  hAlign = LeftAlign,
+  vAlign = TopAlign,
   wrap = true
-): Arrangement {.inline.} =
+): Arrangement {.inline, raises: [].} =
   ## Lays out the character glyphs and returns the arrangement.
   ## Optional parameters:
   ## bounds: width determines wrapping and hAlign, height for vAlign
@@ -390,69 +467,60 @@ proc typeset*(
   ## wrap: enable/disable text wrapping
   typeset(@[newSpan(text, font)], bounds, hAlign, vAlign, wrap)
 
-proc computeBounds*(arrangement: Arrangement): Vec2 =
+proc layoutBounds*(arrangement: Arrangement): Vec2 {.raises: [].} =
   ## Computes the width and height of the arrangement in pixels.
   if arrangement.runes.len > 0:
     for i in 0 ..< arrangement.runes.len:
       if arrangement.runes[i] != LF:
+        # Don't add width of a new line rune.
         let rect = arrangement.selectionRects[i]
         result.x = max(result.x, rect.x + rect.w)
     let finalRect = arrangement.selectionRects[^1]
     result.y = finalRect.y + finalRect.h
+    if arrangement.runes[^1] == LF:
+      # If the text ends with a new line, we need add another line height.
+      result.y += finalRect.h
 
-proc computeBounds*(font: Font, text: string): Vec2 {.inline.} =
+proc layoutBounds*(font: Font, text: string): Vec2 {.inline, raises: [].} =
   ## Computes the width and height of the text in pixels.
-  font.typeset(text).computeBounds()
+  font.typeset(text).layoutBounds()
 
-proc computeBounds*(spans: seq[Span]): Vec2 {.inline.} =
+proc layoutBounds*(spans: seq[Span]): Vec2 {.inline, raises: [].} =
   ## Computes the width and height of the spans in pixels.
-  typeset(spans).computeBounds()
+  typeset(spans).layoutBounds()
 
-proc parseOtf*(buf: string): Font =
-  result.typeface = Typeface()
-  result.typeface.opentype = parseOpenType(buf)
-  result.size = 12
-  result.lineHeight = AutoLineHeight
-  result.paint = rgbx(0, 0, 0, 255)
+proc parseOtf*(buf: string): Typeface {.raises: [PixieError].} =
+  result = Typeface()
+  result.opentype = parseOpenType(buf)
 
-proc parseTtf*(buf: string): Font =
+proc parseTtf*(buf: string): Typeface {.raises: [PixieError].} =
   parseOtf(buf)
 
-proc parseSvgFont*(buf: string): Font =
-  result.typeface = Typeface()
-  result.typeface.svgFont = svgfont.parseSvgFont(buf)
-  result.size = 12
-  result.lineHeight = AutoLineHeight
-  result.paint = Paint(kind: pkSolid, color: rgbx(0, 0, 0, 255))
+proc parseSvgFont*(buf: string): Typeface {.raises: [PixieError].} =
+  result = Typeface()
+  result.svgFont = svgfont.parseSvgFont(buf)
 
-proc textUber(
-  target: Image | Mask,
-  arrangement: Arrangement,
-  transform: Vec2 | Mat3 = vec2(0, 0),
-  strokeWidth = 1.0,
-  lineCap = lcButt,
-  lineJoin = ljMiter,
-  miterLimit = defaultMiterLimit,
-  dashes: seq[float32] = @[],
-  stroke: static[bool] = false
-) =
+proc computePaths(arrangement: Arrangement): seq[Path] =
+  ## Takes an Arrangement and computes Paths for drawing.
+  ## Returns a seq of paths that match the seq of Spans in the arrangement.
+  ## If you only have one Span you will only get one Path.
   var line: int
   for spanIndex, (start, stop) in arrangement.spans:
     let
+      spanPath = newPath()
       font = arrangement.fonts[spanIndex]
       underlineThickness = font.typeface.underlineThickness * font.scale
       underlinePosition = font.typeface.underlinePosition * font.scale
       strikeoutThickness = font.typeface.strikeoutThickness * font.scale
       strikeoutPosition = font.typeface.strikeoutPosition * font.scale
     for runeIndex in start .. stop:
-      let position = arrangement.positions[runeIndex]
-
-      var path = font.typeface.getGlyphPath(arrangement.runes[runeIndex])
+      let
+        position = arrangement.positions[runeIndex]
+        path = font.typeface.getGlyphPath(arrangement.runes[runeIndex])
       path.transform(
         translate(position) *
         scale(vec2(font.scale))
       )
-
       var applyDecoration = true
       if runeIndex == arrangement.lines[line][1]:
         inc line
@@ -466,21 +534,42 @@ proc textUber(
             arrangement.selectionRects[runeIndex].x,
             position.y - underlinePosition + underlineThickness / 2,
             arrangement.selectionRects[runeIndex].w,
-            underlineThickness
+            underlineThickness,
+            font.typeface.isCCW()
           )
         if font.strikethrough:
           path.rect(
             arrangement.selectionRects[runeIndex].x,
             position.y - strikeoutPosition,
             arrangement.selectionRects[runeIndex].w,
-            strikeoutThickness
+            strikeoutThickness,
+            font.typeface.isCCW()
           )
 
-      when stroke:
-        when type(target) is Image:
+      spanPath.addPath(path)
+    result.add(spanPath)
+
+proc textUber(
+  target: Image | Mask,
+  arrangement: Arrangement,
+  transform = mat3(),
+  strokeWidth: float32 = 1.0,
+  lineCap = ButtCap,
+  lineJoin = MiterJoin,
+  miterLimit = defaultMiterLimit,
+  dashes: seq[float32] = @[],
+  stroke: static[bool] = false
+) =
+  let spanPaths = arrangement.computePaths()
+  for spanIndex in 0 ..< arrangement.spans.len:
+    let path = spanPaths[spanIndex]
+    when stroke:
+      when type(target) is Image:
+        let font = arrangement.fonts[spanIndex]
+        for paint in font.paints:
           target.strokePath(
             path,
-            font.paint,
+            paint,
             transform,
             strokeWidth,
             lineCap,
@@ -488,27 +577,39 @@ proc textUber(
             miterLimit,
             dashes
           )
-        else: # target is Mask
-          target.strokePath(
-            path,
-            transform,
-            strokeWidth,
-            lineCap,
-            lineJoin,
-            miterLimit,
-            dashes
-          )
-      else:
-        when type(target) is Image:
-          target.fillPath(path, font.paint, transform)
-        else: # target is Mask
-          target.fillPath(path, transform)
+      else: # target is Mask
+        target.strokePath(
+          path,
+          transform,
+          strokeWidth,
+          lineCap,
+          lineJoin,
+          miterLimit,
+          dashes
+        )
+    else:
+      when type(target) is Image:
+        let font = arrangement.fonts[spanIndex]
+        for paint in font.paints:
+          target.fillPath(path, paint, transform)
+      else: # target is Mask
+        target.fillPath(path, transform)
+
+proc computeBounds*(
+  arrangement: Arrangement,
+  transform = mat3()
+): Rect {.raises: [PixieError].} =
+  let fullPath = newPath()
+  for path in arrangement.computePaths():
+    fullPath.addPath(path)
+  fullPath.transform(transform)
+  fullPath.computeBounds()
 
 proc fillText*(
   target: Image | Mask,
   arrangement: Arrangement,
-  transform: Vec2 | Mat3 = vec2(0, 0)
-) {.inline.} =
+  transform = mat3()
+) {.inline, raises: [PixieError].} =
   ## Fills the text arrangement.
   textUber(
     target,
@@ -520,11 +621,11 @@ proc fillText*(
   target: Image | Mask,
   font: Font,
   text: string,
-  transform: Vec2 | Mat3 = vec2(0, 0),
+  transform = mat3(),
   bounds = vec2(0, 0),
-  hAlign = haLeft,
-  vAlign = vaTop
-) {.inline.} =
+  hAlign = LeftAlign,
+  vAlign = TopAlign
+) {.inline, raises: [PixieError].} =
   ## Typesets and fills the text. Optional parameters:
   ## transform: translation or matrix to apply
   ## bounds: width determines wrapping and hAlign, height for vAlign
@@ -535,13 +636,13 @@ proc fillText*(
 proc strokeText*(
   target: Image | Mask,
   arrangement: Arrangement,
-  transform: Vec2 | Mat3 = vec2(0, 0),
-  strokeWidth = 1.0,
-  lineCap = lcButt,
-  lineJoin = ljMiter,
+  transform = mat3(),
+  strokeWidth: float32 = 1.0,
+  lineCap = ButtCap,
+  lineJoin = MiterJoin,
   miterLimit = defaultMiterLimit,
   dashes: seq[float32] = @[]
-) {.inline.} =
+) {.inline, raises: [PixieError].} =
   ## Strokes the text arrangement.
   textUber(
     target,
@@ -559,16 +660,16 @@ proc strokeText*(
   target: Image | Mask,
   font: Font,
   text: string,
-  transform: Vec2 | Mat3 = vec2(0, 0),
-  strokeWidth = 1.0,
+  transform = mat3(),
+  strokeWidth: float32 = 1.0,
   bounds = vec2(0, 0),
-  hAlign = haLeft,
-  vAlign = vaTop,
-  lineCap = lcButt,
-  lineJoin = ljMiter,
+  hAlign = LeftAlign,
+  vAlign = TopAlign,
+  lineCap = ButtCap,
+  lineJoin = MiterJoin,
   miterLimit = defaultMiterLimit,
   dashes: seq[float32] = @[]
-) {.inline.} =
+) {.inline, raises: [PixieError].} =
   ## Typesets and strokes the text. Optional parameters:
   ## transform: translation or matrix to apply
   ## bounds: width determines wrapping and hAlign, height for vAlign
@@ -586,3 +687,40 @@ proc strokeText*(
     miterLimit,
     dashes
   )
+
+proc readTypeface*(filePath: string): Typeface {.raises: [PixieError].} =
+  ## Loads a typeface from a file.
+  try:
+    result =
+      case splitFile(filePath).ext.toLowerAscii():
+        of ".ttf":
+          parseTtf(readFile(filePath))
+        of ".otf":
+          parseOtf(readFile(filePath))
+        of ".svg":
+          parseSvgFont(readFile(filePath))
+        else:
+          raise newException(PixieError, "Unsupported font format")
+  except IOError as e:
+    raise newException(PixieError, e.msg, e)
+
+  result.filePath = filePath
+
+proc readTypefaces*(filePath: string): seq[Typeface] {.raises: [PixieError].} =
+  ## Loads a OpenType Collection (.ttc).
+  try:
+    for opentype in parseOpenTypeCollection(readFile(filePath)):
+      let typeface = Typeface()
+      typeface.opentype = opentype
+      result.add(typeface)
+  except IOError as e:
+    raise newException(PixieError, e.msg, e)
+
+proc name*(typeface: Typeface): string =
+  ## Returns the name of the font.
+  if typeface.opentype != nil:
+    return typeface.opentype.fullName
+
+proc readFont*(filePath: string): Font {.raises: [PixieError].} =
+  ## Loads a font from a file.
+  newFont(readTypeface(filePath))

@@ -1,84 +1,102 @@
-import blends, chroma, common, images, vmath
+import chroma, common, images, internal, vmath
+
+when defined(amd64) and allowSimd:
+  import nimsimd/sse2
 
 type
   PaintKind* = enum
-    pkSolid
-    pkImage
-    pkImageTiled
-    pkGradientLinear
-    pkGradientRadial
-    pkGradientAngular
+    SolidPaint
+    ImagePaint
+    TiledImagePaint
+    LinearGradientPaint
+    RadialGradientPaint
+    AngularGradientPaint
 
-  Paint* = object
+  Paint* = ref object
     ## Paint used to fill paths.
-    case kind*: PaintKind
-    of pkSolid:
-      color*: ColorRGBX                   ## Color to fill with.
-    of pkImage, pkImageTiled:
-      image*: Image                       ## Image to fill with.
-      imageMat*: Mat3                     ## Matrix of the filled image.
-    of pkGradientLinear, pkGradientRadial, pkGradientAngular:
-      gradientHandlePositions*: seq[Vec2] ## Gradient positions (image space).
-      gradientStops*: seq[ColorStop]      ## Color stops (gradient space).
-    blendMode*: BlendMode                 ## Blend mode.
+    kind*: PaintKind
+    blendMode*: BlendMode               ## Blend mode.
+    opacity*: float32
+    # SolidPaint
+    color*: Color                       ## Color to fill with.
+    # ImagePaint, TiledImagePaint:
+    image*: Image                       ## Image to fill with.
+    imageMat*: Mat3                     ## Matrix of the filled image.
+    # LinearGradientPaint, RadialGradientPaint, AngularGradientPaint:
+    gradientHandlePositions*: seq[Vec2] ## Gradient positions (image space).
+    gradientStops*: seq[ColorStop]      ## Color stops (gradient space).
 
   ColorStop* = object
     ## Color stop on a gradient curve.
-    color*: ColorRGBX  ## Color of the stop
-    position*: float32 ## Gradient Stop position 0..1.
+    color*: Color      ## Color of the stop.
+    position*: float32 ## Gradient stop position 0..1.
 
   SomePaint* = string | Paint | SomeColor
+
+proc newPaint*(kind: PaintKind): Paint {.raises: [].} =
+  ## Create a new Paint.
+  result = Paint(kind: kind, opacity: 1, imageMat: mat3())
+
+proc newPaint*(paint: Paint): Paint {.raises: [].} =
+  ## Create a new Paint with the same properties.
+  result = newPaint(paint.kind)
+  result.blendMode = paint.blendMode
+  result.opacity = paint.opacity
+  result.color = paint.color
+  result.image = paint.image
+  result.imageMat = paint.imageMat
+  result.gradientHandlePositions = paint.gradientHandlePositions
+  result.gradientStops = paint.gradientStops
 
 converter parseSomePaint*(paint: SomePaint): Paint {.inline.} =
   ## Given SomePaint, parse it in different ways.
   when type(paint) is string:
-    Paint(kind: pkSolid, color: parseHtmlColor(paint).rgbx())
+    result = newPaint(SolidPaint)
+    try:
+      result.color = parseHtmlColor(paint)
+    except:
+      raise newException(PixieError, "Unable to parse color " & paint)
   elif type(paint) is SomeColor:
-    when type(paint) is ColorRGBX:
-      Paint(kind: pkSolid, color: paint)
+    result = newPaint(SolidPaint)
+    when type(paint) is Color:
+      result.color = paint
     else:
-      Paint(kind: pkSolid, color: paint.rgbx())
+      result.color = paint.color()
   elif type(paint) is Paint:
     paint
 
-proc toLineSpace(at, to, point: Vec2): float32 {.inline.} =
-  ## Convert position on to where it would fall on a line between at and to.
-  let
-    d = to - at
-    det = d.x * d.x + d.y * d.y
-  return (d.y * (point.y - at.y) + d.x * (point.x - at.x)) / det
+proc colorStop*(color: Color, position: float32): ColorStop =
+  ColorStop(color: color, position: position)
 
-proc gradientPut(image: Image, x, y: int, a: float32, stops: seq[ColorStop]) =
-  ## Put an gradient color based on the "a" - were are we related to a line.
+proc gradientColor(paint: Paint, t: float32): ColorRGBX =
+  ## Get the gradient color based on `t` - where are we related to a line.
   var index = -1
-  for i, stop in stops:
-    if stop.position < a:
+  for i, stop in paint.gradientStops:
+    if stop.position < t:
       index = i
-    if stop.position > a:
+    if stop.position > t:
       break
   var color: Color
   if index == -1:
     # first stop solid
-    color = stops[0].color.color
-  elif index + 1 >= stops.len:
+    color = paint.gradientStops[0].color
+  elif index + 1 >= paint.gradientStops.len:
     # last stop solid
-    color = stops[index].color.color
+    color = paint.gradientStops[index].color
   else:
     let
-      gs1 = stops[index]
-      gs2 = stops[index+1]
+      gs1 = paint.gradientStops[index]
+      gs2 = paint.gradientStops[index + 1]
     color = mix(
-      gs1.color.color,
-      gs2.color.color,
-      (a - gs1.position) / (gs2.position - gs1.position)
+      gs1.color,
+      gs2.color,
+      (t - gs1.position) / (gs2.position - gs1.position)
     )
-  image.setRgbaUnsafe(x, y, color.rgba.rgbx())
+  color.a *= paint.opacity
+  color.rgbx()
 
-proc fillGradientLinear*(image: Image, paint: Paint) =
+proc fillGradientLinear(image: Image, paint: Paint) =
   ## Fills a linear gradient.
-
-  if paint.kind != pkGradientLinear:
-    raise newException(PixieError, "Paint kind must be " & $pkGradientLinear)
 
   if paint.gradientHandlePositions.len != 2:
     raise newException(PixieError, "Linear gradient requires 2 handles")
@@ -86,27 +104,83 @@ proc fillGradientLinear*(image: Image, paint: Paint) =
   if paint.gradientStops.len == 0:
     raise newException(PixieError, "Gradient must have at least 1 color stop")
 
+  paint.opacity = clamp(paint.opacity, 0, 1)
+  if paint.opacity == 0:
+    return
+
+  proc toLineSpace(at, to, point: Vec2): float32 {.inline.} =
+    ## Convert position on to where it would fall on a line between at and to.
+    let
+      d = to - at
+      det = d.x * d.x + d.y * d.y
+    (d.y * (point.y - at.y) + d.x * (point.x - at.x)) / det
+
   let
     at = paint.gradientHandlePositions[0]
     to = paint.gradientHandlePositions[1]
-  for y in 0 ..< image.height:
-    for x in 0 ..< image.width:
+
+  if at.y == to.y: # Horizontal gradient
+    var x: int
+    while x < image.width:
+      when defined(amd64) and allowSimd:
+        if x + 4 <= image.width:
+          var colors: array[4, ColorRGBX]
+          for i in 0 ..< 4:
+            let
+              xy = vec2((x + i).float32, 0.float32)
+              t = toLineSpace(at, to, xy)
+              rgbx = paint.gradientColor(t)
+            colors[i] = rgbx
+
+          let colorVec = cast[M128i](colors)
+          for y in 0 ..< image.height:
+            mm_storeu_si128(image.data[image.dataIndex(x, y)].addr, colorVec)
+          x += 4
+          continue
+
       let
-        xy = vec2(x.float32, y.float32)
-        a = toLineSpace(at, to, xy)
-      image.gradientPut(x, y, a, paint.gradientStops)
+        xy = vec2(x.float32, 0.float32)
+        t = toLineSpace(at, to, xy)
+        rgbx = paint.gradientColor(t)
+      for y in 0 ..< image.height:
+        image.unsafe[x, y] = rgbx
+      inc x
 
-proc fillGradientRadial*(image: Image, paint: Paint) =
+  elif at.x == to.x: # Vertical gradient
+    for y in 0 ..< image.height:
+      let
+        xy = vec2(0.float32, y.float32)
+        t = toLineSpace(at, to, xy)
+        rgbx = paint.gradientColor(t)
+      var x: int
+      when defined(amd64) and allowSimd:
+        let colorVec = mm_set1_epi32(cast[int32](rgbx))
+        for _ in 0 ..< image.width div 4:
+          mm_storeu_si128(image.data[image.dataIndex(x, y)].addr, colorVec)
+          x += 4
+      for x in x ..< image.width:
+        image.unsafe[x, y] = rgbx
+
+  else:
+    for y in 0 ..< image.height:
+      for x in 0 ..< image.width:
+        let
+          xy = vec2(x.float32, y.float32)
+          t = toLineSpace(at, to, xy)
+        image.unsafe[x, y] = paint.gradientColor(t)
+
+proc fillGradientRadial(image: Image, paint: Paint) =
   ## Fills a radial gradient.
-
-  if paint.kind != pkGradientRadial:
-    raise newException(PixieError, "Paint kind must be " & $pkGradientRadial)
 
   if paint.gradientHandlePositions.len != 3:
     raise newException(PixieError, "Radial gradient requires 3 handles")
 
   if paint.gradientStops.len == 0:
     raise newException(PixieError, "Gradient must have at least 1 color stop")
+
+  paint.opacity = clamp(paint.opacity, 0, 1)
+  if paint.opacity == 0:
+    return
 
   let
     center = paint.gradientHandlePositions[0]
@@ -124,14 +198,11 @@ proc fillGradientRadial*(image: Image, paint: Paint) =
     for x in 0 ..< image.width:
       let
         xy = vec2(x.float32, y.float32)
-        b = (mat * xy).length()
-      image.gradientPut(x, y, b, paint.gradientStops)
+        t = (mat * xy).length()
+      image.unsafe[x, y] = paint.gradientColor(t)
 
-proc fillGradientAngular*(image: Image, paint: Paint) =
+proc fillGradientAngular(image: Image, paint: Paint) =
   ## Fills an angular gradient.
-
-  if paint.kind != pkGradientAngular:
-    raise newException(PixieError, "Paint kind must be " & $pkGradientAngular)
 
   if paint.gradientHandlePositions.len != 3:
     raise newException(PixieError, "Angular gradient requires 2 handles")
@@ -139,9 +210,14 @@ proc fillGradientAngular*(image: Image, paint: Paint) =
   if paint.gradientStops.len == 0:
     raise newException(PixieError, "Gradient must have at least 1 color stop")
 
+  paint.opacity = clamp(paint.opacity, 0, 1)
+  if paint.opacity == 0:
+    return
+
   let
     center = paint.gradientHandlePositions[0]
     edge = paint.gradientHandlePositions[1]
+    f32PI = PI.float32
   # TODO: make edge between start and end anti-aliased.
   let gradientAngle = normalize(edge - center).angle().fixAngle()
   for y in 0 ..< image.height:
@@ -149,5 +225,18 @@ proc fillGradientAngular*(image: Image, paint: Paint) =
       let
         xy = vec2(x.float32, y.float32)
         angle = normalize(xy - center).angle()
-        a = (angle + gradientAngle + PI/2).fixAngle() / 2 / PI + 0.5
-      image.gradientPut(x, y, a, paint.gradientStops)
+        t = (angle + gradientAngle + f32PI / 2).fixAngle() / 2 / f32PI + 0.5.float32
+      image.unsafe[x, y] = paint.gradientColor(t)
+
+proc fillGradient*(image: Image, paint: Paint) {.raises: [PixieError].} =
+  ## Fills with the Paint gradient.
+
+  case paint.kind:
+  of LinearGradientPaint:
+    image.fillGradientLinear(paint)
+  of RadialGradientPaint:
+    image.fillGradientRadial(paint)
+  of AngularGradientPaint:
+    image.fillGradientAngular(paint)
+  else:
+    raise newException(PixieError, "Paint must be a gradient")

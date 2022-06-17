@@ -17,7 +17,7 @@ block:
 
   ctx.clearRect(10, 10, 120, 100)
 
-  ctx.image.writeFile("tests/images/context/clearRect_1.png")
+  ctx.image.writeFile("tests/contexts/clearRect_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -34,7 +34,7 @@ block:
   ctx.lineTo(120, 120)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/beginPath_1.png")
+  ctx.image.writeFile("tests/contexts/beginPath_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -46,12 +46,12 @@ block:
   ctx.lineTo(280, 120)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/moveTo_1.png")
+  ctx.image.writeFile("tests/contexts/moveTo_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  var region: Path
+  let region = newPath()
   region.moveTo(30, 90)
   region.lineTo(110, 20)
   region.lineTo(240, 130)
@@ -61,9 +61,9 @@ block:
   region.closePath()
 
   ctx.fillStyle = "green"
-  ctx.fill(region, wrEvenOdd)
+  ctx.fill(region, EvenOdd)
 
-  ctx.image.writeFile("tests/images/context/fill_1.png")
+  ctx.image.writeFile("tests/contexts/fill_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -71,7 +71,7 @@ block:
   ctx.rect(10, 10, 150, 100)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/stroke_1.png")
+  ctx.image.writeFile("tests/contexts/stroke_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -94,7 +94,7 @@ block:
   ctx.lineTo(280, 140)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/stroke_2.png")
+  ctx.image.writeFile("tests/contexts/stroke_2.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -112,7 +112,7 @@ block:
   ctx.stroke()
   ctx.fill()
 
-  ctx.image.writeFile("tests/images/context/stroke_3.png")
+  ctx.image.writeFile("tests/contexts/stroke_3.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -124,7 +124,7 @@ block:
   ctx.closePath()
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/closePath_1.png")
+  ctx.image.writeFile("tests/contexts/closePath_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -140,7 +140,7 @@ block:
   ctx.bezierCurveTo(cp1, cp2, to)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/bezierCurveTo_1.png")
+  ctx.image.writeFile("tests/contexts/bezierCurveTo_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -150,7 +150,7 @@ block:
   ctx.bezierCurveTo(120, 160, 180, 10, 220, 140)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/bezierCurveTo_2.png")
+  ctx.image.writeFile("tests/contexts/bezierCurveTo_2.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -159,7 +159,7 @@ block:
   ctx.quadraticCurveTo(230, 30, 50, 100)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/quadracticCurveTo_1.png")
+  ctx.image.writeFile("tests/contexts/quadracticCurveTo_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -169,7 +169,7 @@ block:
   ctx.quadraticCurveTo(230, 150, 250, 20)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/quadracticCurveTo_2.png")
+  ctx.image.writeFile("tests/contexts/quadracticCurveTo_2.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -178,7 +178,7 @@ block:
   ctx.ellipse(100, 75, 75, 50)
   ctx.stroke()
 
-  ctx.image.writeFile("tests/images/context/ellipse_1.png")
+  ctx.image.writeFile("tests/contexts/ellipse_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -186,33 +186,33 @@ block:
   ctx.strokeStyle = "green"
   ctx.strokeRect(20, 10, 160, 100)
 
-  ctx.image.writeFile("tests/images/context/strokeRect_1.png")
+  ctx.image.writeFile("tests/contexts/strokeRect_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  ctx.lineJoin = ljBevel
+  ctx.lineJoin = BevelJoin
   ctx.lineWidth = 15
   ctx.strokeStyle = "#38f"
   ctx.strokeRect(30, 30, 160, 90)
 
-  ctx.image.writeFile("tests/images/context/strokeRect_2.png")
+  ctx.image.writeFile("tests/contexts/strokeRect_2.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  ctx.setTransform(1, 0.2, 0.8, 1, 0, 0)
+  ctx.setTransform(mat3(1, 0.2, 0, 0.8, 1, 0, 0, 0, 1))
   ctx.fillRect(0, 0, 100, 100)
 
-  ctx.image.writeFile("tests/images/context/setTransform_1.png")
+  ctx.image.writeFile("tests/contexts/setTransform_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  ctx.setTransform(1, 0.2, 0.8, 1, 0, 0)
+  ctx.setTransform(mat3(1, 0.2, 0, 0.8, 1, 0, 0, 0, 1))
   ctx.fillRect(0, 0, 100, 100)
 
-  ctx.image.writeFile("tests/images/context/resetTransform_1.png")
+  ctx.image.writeFile("tests/contexts/resetTransform_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -220,12 +220,12 @@ block:
   ctx.rotate(45 * PI / 180)
   ctx.fillRect(60, 0, 100, 30)
 
-  ctx.image.writeFile("tests/images/context/resetTransform_1.png")
+  ctx.image.writeFile("tests/contexts/resetTransform_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  ctx.transform(1, 0, 1.7, 1, 0, 0)
+  ctx.transform(mat3(1, 0, 0, 1.7, 1, 0, 0, 0, 1))
   ctx.fillStyle = "gray"
   ctx.fillRect(40, 40, 50, 20)
   ctx.fillRect(40, 90, 50, 20)
@@ -235,7 +235,7 @@ block:
   ctx.fillRect(40, 40, 50, 20)
   ctx.fillRect(40, 90, 50, 20)
 
-  ctx.image.writeFile("tests/images/context/resetTransform_2.png")
+  ctx.image.writeFile("tests/contexts/resetTransform_2.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -244,12 +244,12 @@ block:
   ctx.fillStyle = "red"
   ctx.fillRect(0, 0, 80, 80)
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.setTransform(mat3(1, 0, 0, 0, 1, 0, 0, 0, 1))
 
   ctx.fillStyle = "gray"
   ctx.fillRect(0, 0, 80, 80)
 
-  ctx.image.writeFile("tests/images/context/translate_1.png")
+  ctx.image.writeFile("tests/contexts/translate_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -258,12 +258,12 @@ block:
   ctx.fillStyle = "red"
   ctx.fillRect(10, 10, 8, 20)
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.setTransform(mat3(1, 0, 0, 0, 1, 0, 0, 0, 1))
 
   ctx.fillStyle = "gray"
   ctx.fillRect(10, 10, 8, 20)
 
-  ctx.image.writeFile("tests/images/context/scale_1.png")
+  ctx.image.writeFile("tests/contexts/scale_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -275,27 +275,30 @@ block:
   ctx.fillStyle = "red"
   ctx.fillRect(100, 0, 80, 20)
 
-  ctx.image.writeFile("tests/images/context/rotate_1.png")
+  ctx.image.writeFile("tests/contexts/rotate_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  ctx.font = readFont("tests/fonts/Roboto-Regular_1.ttf")
-  ctx.font.size = 50
+  ctx.font = "tests/fonts/Roboto-Regular_1.ttf"
+  ctx.fontSize = 50
+  ctx.save()
+  ctx.fontSize = 30
+  ctx.restore()
 
   ctx.fillText("Hello world", 50, 90)
 
-  ctx.image.writeFile("tests/images/context/fillText_1.png")
+  ctx.image.writeFile("tests/contexts/fillText_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  ctx.font = readFont("tests/fonts/Roboto-Regular_1.ttf")
-  ctx.font.size = 50
+  ctx.font = "tests/fonts/Roboto-Regular_1.ttf"
+  ctx.fontSize = 50
 
   ctx.strokeText("Hello world", 50, 90)
 
-  ctx.image.writeFile("tests/images/context/strokeText_1.png")
+  ctx.image.writeFile("tests/contexts/strokeText_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -309,7 +312,7 @@ block:
 
   ctx.fillRect(150, 40, 100, 100)
 
-  ctx.image.writeFile("tests/images/context/save_1.png")
+  ctx.image.writeFile("tests/contexts/save_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -323,7 +326,7 @@ block:
   ctx.fillStyle = "orange"
   ctx.fillRect(0, 0, 100, 100)
 
-  ctx.image.writeFile("tests/images/context/clip_1.png")
+  ctx.image.writeFile("tests/contexts/clip_1.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -340,7 +343,7 @@ block:
   ctx.fillStyle = "orange"
   ctx.fillRect(0, 0, 100, 100)
 
-  ctx.image.writeFile("tests/images/context/clip_1b.png")
+  ctx.image.writeFile("tests/contexts/clip_1b.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -361,7 +364,7 @@ block:
   ctx.fillStyle = "blue"
   ctx.fillRect(0, 0, ctx.image.width.float32, ctx.image.height.float32)
 
-  ctx.image.writeFile("tests/images/context/clip_1c.png")
+  ctx.image.writeFile("tests/contexts/clip_1c.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -382,7 +385,7 @@ block:
 
   ctx.restore()
 
-  ctx.image.writeFile("tests/images/context/clip_1d.png")
+  ctx.image.writeFile("tests/contexts/clip_1d.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -406,7 +409,7 @@ block:
   ctx.fillStyle = "blue"
   ctx.fillRect(0, 0, ctx.image.width.float32, ctx.image.height.float32)
 
-  ctx.image.writeFile("tests/images/context/clip_1e.png")
+  ctx.image.writeFile("tests/contexts/clip_1e.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
@@ -430,29 +433,29 @@ block:
 
   ctx.restore() # Pop the layer
 
-  ctx.image.writeFile("tests/images/context/clip_1f.png")
+  ctx.image.writeFile("tests/contexts/clip_1f.png")
 
 block:
   let ctx = newContext(newImage(300, 150))
 
-  var region: Path
+  let region = newPath()
   region.rect(80, 10, 20, 130)
   region.rect(40, 50, 100, 50)
-  ctx.clip(region, wrEvenOdd)
+  ctx.clip(region, EvenOdd)
 
   ctx.fillStyle = "blue"
   ctx.fillRect(0, 0, ctx.image.width.float32, ctx.image.height.float32)
 
-  ctx.image.writeFile("tests/images/context/clip_2.png")
+  ctx.image.writeFile("tests/contexts/clip_2.png")
 
 block:
   let image = newImage(300, 150)
 
   let ctx = newContext(image)
 
-  var circlePath: Path
+  var circlePath = newPath()
   circlePath.circle(150, 75, 75)
-  var squarePath: Path
+  var squarePath = newPath()
   squarePath.rect(85, 10, 130, 130)
 
   ctx.clip(circlePath)
@@ -461,19 +464,19 @@ block:
   ctx.fillStyle = "blue"
   ctx.fillRect(0, 0, ctx.image.width.float32, ctx.image.height.float32)
 
-  image.writeFile("tests/images/context/clip_3.png")
+  image.writeFile("tests/contexts/clip_3.png")
 
 block:
   let image = newImage(300, 150)
 
   let ctx = newContext(image)
-  ctx.font = readFont("tests/fonts/Roboto-Regular_1.ttf")
-  ctx.font.size = 50
+  ctx.font = "tests/fonts/Roboto-Regular_1.ttf"
+  ctx.fontSize = 50
   ctx.fillStyle = "blue"
 
   ctx.saveLayer()
 
-  var circlePath: Path
+  var circlePath = newPath()
   circlePath.circle(150, 75, 75)
 
   ctx.clip(circlePath)
@@ -482,14 +485,14 @@ block:
 
   ctx.restore()
 
-  image.writeFile("tests/images/context/clip_text.png")
+  image.writeFile("tests/contexts/clip_text.png")
 
 block:
   let ctx = newContext(100, 100)
-  ctx.font = readFont("tests/fonts/Roboto-Regular_1.ttf")
+  ctx.font = "tests/fonts/Roboto-Regular_1.ttf"
 
   let metrics = ctx.measureText("Hello world")
-  doAssert metrics.width == 61
+  doAssert metrics.width == 60
 
 block:
   let
@@ -514,7 +517,7 @@ block:
   drawDashedLine(@[20.float32, 3, 3, 3, 3, 3, 3, 3])
   drawDashedLine(@[12.float32, 3, 3])
 
-  image.writeFile("tests/images/context/setLineDash_1.png")
+  image.writeFile("tests/contexts/setLineDash_1.png")
 
 block:
   let
@@ -523,14 +526,15 @@ block:
 
   image.fill(rgba(255, 255, 255, 255))
 
-  var paint = Paint(kind: pkSolid, color: rgba(0, 0, 255, 255))
-  paint.blendMode = bmExclusion
+  let paint = newPaint(SolidPaint)
+  paint.color = color(0, 0, 1, 1)
+  paint.blendMode = ExclusionBlend
 
   ctx.fillStyle = paint
 
   ctx.fillRect(10, 10, 100, 100)
 
-  image.writeFile("tests/images/context/blendmode_1.png")
+  image.writeFile("tests/contexts/blendmode_1.png")
 
 block:
   let
@@ -547,4 +551,127 @@ block:
   ctx.fillStyle = "red"
   ctx.fillRect(50, 50, 100, 100)
 
-  image.writeFile("tests/images/context/globalAlpha_1.png")
+  image.writeFile("tests/contexts/globalAlpha_1.png")
+
+block:
+  let
+    image = newImage(100, 100)
+    ctx = newContext(image)
+    testImage = readImage("tests/images/pip1.png")
+  ctx.drawImage(testImage, 0, 0)
+  ctx.drawImage(testImage, 30, 30)
+  image.writeFile("tests/contexts/draw_image.png")
+
+block:
+  let
+    image = newImage(100, 100)
+    ctx = newContext(image)
+    testImage = readImage("tests/images/pip1.png")
+  ctx.translate(30, 30)
+  ctx.drawImage(testImage, -30, -30)
+  ctx.drawImage(testImage, 0, 0)
+  image.writeFile("tests/contexts/draw_image_translated.png")
+
+block:
+  let
+    image = newImage(100, 100)
+    ctx = newContext(image)
+    testImage = readImage("tests/images/pip1.png")
+  ctx.scale(2, 2)
+  ctx.drawImage(testImage, 0, 0)
+  ctx.scale(0.25, 0.25)
+  ctx.drawImage(testImage, 0, 0)
+  image.writeFile("tests/contexts/draw_image_scaled.png")
+
+block:
+  let
+    image = newImage(100, 100)
+    ctx = newContext(image)
+    testImage = readImage("tests/images/pip1.png")
+  ctx.drawImage(testImage, 30, 30, 20, 20)
+  image.writeFile("tests/contexts/draw_image_self_scaled.png")
+
+block:
+  let
+    image = newImage(300, 227)
+    ctx = newContext(image)
+    rhino = readImage("tests/images/rhino.png")
+  ctx.drawImage(rhino, 33, 71, 104, 124, 21, 20, 87, 104)
+  image.writeFile("tests/contexts/draw_image_rhino.png")
+
+block:
+  let
+    image = newImage(300, 227)
+    ctx = newContext(image)
+    rhino = readImage("tests/images/rhino.png")
+  ctx.drawImage(rhino, rect(33, 71, 104, 124), rect(21, 20, 87, 104))
+  image.writeFile("tests/contexts/draw_image_rhino2.png")
+
+block:
+  let
+    image = newImage(100, 100)
+    ctx = newContext(image)
+  ctx.rect(10, 10, 100, 100)
+  doAssert ctx.isPointInPath(30, 70)
+
+block:
+  let
+    image = newImage(300, 150)
+    ctx = newContext(image)
+  ctx.arc(150, 75, 50, 0, 2 * PI)
+  doAssert ctx.isPointInPath(150, 50)
+
+block:
+  let
+    image = newImage(100, 100)
+    ctx = newContext(image)
+  ctx.rect(10, 10, 100, 100)
+  doAssert ctx.isPointInStroke(50, 10)
+
+block:
+  let
+    image = newImage(300, 150)
+    ctx = newContext(image)
+  ctx.ellipse(150, 75, 40, 60)
+  ctx.lineWidth = 25
+  doAssert ctx.isPointInStroke(110, 75)
+
+block:
+  let ctx = newContext(newImage(100, 100))
+  ctx.fillStyle.color = color(1, 0, 0, 1)
+  ctx.save()
+  ctx.fillStyle.color = color(0, 0, 1, 1)
+  ctx.restore()
+  ctx.fillRect(0, 0, ctx.image.width.float32, ctx.image.height.float32)
+  ctx.image.writeFile("tests/contexts/paintSaveRestore.png")
+
+block:
+  # From https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/textBaseline
+  let
+    image = newImage(550, 500)
+    ctx = newContext(image)
+  image.fill(rgba(255, 255, 255, 255))
+
+  const baselines = @[
+    TopBaseline,
+    HangingBaseline,
+    MiddleBaseline,
+    AlphabeticBaseline,
+    IdeographicBaseline,
+    BottomBaseline,
+  ]
+
+  ctx.font = "tests/fonts/Roboto-Regular_1.ttf"
+  ctx.fontSize = 28
+  ctx.strokeStyle = "red"
+
+  for index, baseline in baselines:
+    ctx.textBaseline = baseline
+    let y = (75 + index * 75).float32
+    ctx.beginPath()
+    ctx.moveTo(0, y + 0.5)
+    ctx.lineTo(550, y + 0.5)
+    ctx.stroke()
+    ctx.fillText("Abcdefghijklmnop (" & $baseline & ")", 0, y)
+
+  ctx.image.writeFile("tests/contexts/textBaseline_1.png")

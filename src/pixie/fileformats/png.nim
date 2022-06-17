@@ -1,6 +1,9 @@
 import chroma, flatty/binny, math, pixie/common, pixie/images, pixie/internal,
     pixie/masks, zippy, zippy/crc
 
+when defined(amd64) and allowSimd:
+  import nimsimd/sse2
+
 # See http://www.libpng.org/pub/png/spec/1.2/PNG-Contents.html
 
 const
@@ -14,23 +17,28 @@ type
     width, height: int
     bitDepth, colorType, compressionMethod, filterMethod, interlaceMethod: uint8
 
+  Png* = ref object
+    width*, height*, channels*: int
+    data*: seq[ColorRGBA]
+
 template failInvalid() =
   raise newException(PixieError, "Invalid PNG buffer, unable to load")
 
-# template failCRC() =
-#   raise newException(PixieError, "CRC check failed")
+template failCRC() =
+  raise newException(PixieError, "CRC check failed")
 
 when defined(release):
   {.push checks: off.}
 
-proc decodeHeader(data: seq[uint8]): PngHeader =
+proc decodeHeader(data: pointer): PngHeader =
+  let data = cast[ptr UncheckedArray[uint8]](data)
   result.width = data.readUint32(0).swap().int
   result.height = data.readUint32(4).swap().int
-  result.bitDepth = data[8]
-  result.colorType = data[9]
-  result.compressionMethod = data[10]
-  result.filterMethod = data[11]
-  result.interlaceMethod = data[12]
+  result.bitDepth = data.readUint8(8)
+  result.colorType = data.readUint8(9)
+  result.compressionMethod = data.readUint8(10)
+  result.filterMethod = data.readUint8(11)
+  result.interlaceMethod = data.readUint8(12)
 
   if result.width == 0 or result.width > int32.high.int:
     raise newException(PixieError, "Invalid PNG width")
@@ -74,30 +82,31 @@ proc decodeHeader(data: seq[uint8]): PngHeader =
   # Not yet supported:
 
   if result.bitDepth == 16:
-    raise newException(PixieError, "PNG 16 bit depth not yet supported")
+    raise newException(PixieError, "PNG 16 bit depth not supported yet")
 
   if result.interlaceMethod != 0:
-    raise newException(PixieError, "Interlaced PNG not yet supported")
+    raise newException(PixieError, "Interlaced PNG not supported yet")
 
-proc decodePalette(data: seq[uint8]): seq[ColorRGB] =
-  if data.len == 0 or data.len mod 3 != 0:
+proc decodePalette(data: pointer, len: int): seq[ColorRGB] =
+  if len == 0 or len mod 3 != 0:
     failInvalid()
 
-  result.setLen(data.len div 3)
+  result.setLen(len div 3)
 
-  for i in 0 ..< data.len div 3:
-    result[i] = cast[ptr ColorRGB](data[i * 3].unsafeAddr)[]
+  copyMem(result[0].addr, data, len)
 
 proc unfilter(
-  uncompressed: seq[uint8], height, rowBytes, bpp: int
+  uncompressed: pointer, len, height, rowBytes, bpp: int
 ): seq[uint8] =
-  result.setLen(uncompressed.len - height)
+  result.setLen(len - height)
 
   template uncompressedIdx(x, y: int): int =
     x + y * (rowBytes + 1)
 
   template unfiteredIdx(x, y: int): int =
     x + y * rowBytes
+
+  let uncompressed = cast[ptr UncheckedArray[uint8]](uncompressed)
 
   # Unfilter the image data
   for y in 0 ..< height:
@@ -110,39 +119,63 @@ proc unfilter(
         rowBytes
       )
     of 1: # Sub
+      let
+        uncompressedStartIdx = uncompressedIdx(1, y)
+        unfilteredStartIx = unfiteredIdx(0, y)
       for x in 0 ..< rowBytes:
-        var value = uncompressed[uncompressedIdx(x + 1, y)]
+        var value = uncompressed[uncompressedStartIdx + x]
         if x - bpp >= 0:
-          value += result[unfiteredIdx(x - bpp, y)]
-        result[unfiteredIdx(x, y)] = value
+          value += result[unfilteredStartIx + x - bpp]
+        result[unfilteredStartIx + x] = value
     of 2: # Up
-      for x in 0 ..< rowBytes:
-        var value = uncompressed[uncompressedIdx(x + 1, y)]
+      let
+        uncompressedStartIdx = uncompressedIdx(1, y)
+        unfilteredStartIx = unfiteredIdx(0, y)
+      var x: int
+      when allowSimd and defined(amd64):
         if y - 1 >= 0:
-          value += result[unfiteredIdx(x, y - 1)]
-        result[unfiteredIdx(x, y)] = value
+          for _ in 0 ..< rowBytes div 16:
+            let
+              bytes = mm_loadu_si128(uncompressed[uncompressedStartIdx + x].addr)
+              up = mm_loadu_si128(result[unfilteredStartIx + x - rowBytes].addr)
+            mm_storeu_si128(
+              result[unfilteredStartIx + x].addr,
+              mm_add_epi8(bytes, up)
+            )
+            x += 16
+      for x in x ..< rowBytes:
+        var value = uncompressed[uncompressedStartIdx + x]
+        if y - 1 >= 0:
+          value += result[unfilteredStartIx + x - rowBytes]
+        result[unfilteredStartIx + x] = value
     of 3: # Average
+      let
+        uncompressedStartIdx = uncompressedIdx(1, y)
+        unfilteredStartIx = unfiteredIdx(0, y)
       for x in 0 ..< rowBytes:
         var
-          value = uncompressed[uncompressedIdx(x + 1, y)]
-          left, up: int
+          value = uncompressed[uncompressedStartIdx + x]
+          left, up: uint32
         if x - bpp >= 0:
-          left = result[unfiteredIdx(x - bpp, y)].int
+          left = result[unfilteredStartIx + x - bpp]
         if y - 1 >= 0:
-          up = result[unfiteredIdx(x, y - 1)].int
+          up = result[unfilteredStartIx + x - rowBytes]
         value += ((left + up) div 2).uint8
-        result[unfiteredIdx(x, y)] = value
+        result[unfilteredStartIx + x] = value
     of 4: # Paeth
+      let
+        uncompressedStartIdx = uncompressedIdx(1, y)
+        unfilteredStartIx = unfiteredIdx(0, y)
       for x in 0 ..< rowBytes:
         var
-          value = uncompressed[uncompressedIdx(x + 1, y)]
+          value = uncompressed[uncompressedStartIdx + x]
           left, up, upLeft: int
         if x - bpp >= 0:
-          left = result[unfiteredIdx(x - bpp, y)].int
+          left = result[unfilteredStartIx + x - bpp].int
         if y - 1 >= 0:
-          up = result[unfiteredIdx(x, y - 1)].int
+          up = result[unfilteredStartIx + x - rowBytes].int
         if x - bpp >= 0 and y - 1 >= 0:
-          upLeft = result[unfiteredIdx(x - bpp, y - 1)].int
+          upLeft = result[unfilteredStartIx + x - rowBytes - bpp].int
         template paethPredictor(a, b, c: int): int =
           let
             p = a + b - c
@@ -156,19 +189,36 @@ proc unfilter(
           else:
             c
         value += paethPredictor(up, left, upLeft).uint8
-        result[unfiteredIdx(x, y)] = value
+        result[unfilteredStartIx + x] = value
     else:
       discard # Not possible, parseHeader validates
 
 proc decodeImageData(
+  data: ptr UncheckedArray[uint8],
   header: PngHeader,
   palette: seq[ColorRGB],
-  transparency, data: seq[uint8]
+  transparency: string,
+  idats: seq[(int, int)]
 ): seq[ColorRGBA] =
+  if idats.len == 0:
+    failInvalid()
+
   result.setLen(header.width * header.height)
 
   let
-    uncompressed = try: uncompress(data) except ZippyError: failInvalid()
+    uncompressed =
+      if idats.len > 1:
+        var imageData: string
+        for (start, len) in idats:
+          let op = imageData.len
+          imageData.setLen(imageData.len + len)
+          copyMem(imageData[op].addr, data[start].addr, len)
+        try: uncompress(imageData) except ZippyError: failInvalid()
+      else:
+        let
+          (start, len) = idats[0]
+          p = data[start].unsafeAddr
+        try: uncompress(p, len) except ZippyError: failInvalid()
     valuesPerPixel =
       case header.colorType:
       of 0: 1
@@ -187,7 +237,8 @@ proc decodeImageData(
     failInvalid()
 
   let unfiltered = unfilter(
-    uncompressed,
+    uncompressed.cstring,
+    uncompressed.len,
     header.height,
     rowBytes,
     max(valuesPerPixel div valuesPerByte, 1)
@@ -223,9 +274,7 @@ proc decodeImageData(
           bitPos = 0
 
         let alpha = if value.int == special: 0 else: 255
-        result[x + y * header.width] = ColorRGBA(
-          r: value, g: value, b: value, a: alpha.uint8
-        )
+        result[x + y * header.width] = rgba(value, value, value, alpha.uint8)
 
       # If we move to a new row, skip to the next full byte
       if bitPos > 0:
@@ -234,32 +283,33 @@ proc decodeImageData(
   of 2:
     var special: ColorRGBA
     if transparency.len == 6: # Need to apply transparency check, slower.
-      special.r = transparency[1]
-      special.g = transparency[3]
-      special.b = transparency[5]
+      special.r = transparency.readUint8(1)
+      special.g = transparency.readUint8(3)
+      special.b = transparency.readUint8(5)
       special.a = 255
 
       # While we can read an extra byte safely, do so. Much faster.
       for i in 0 ..< header.height * header.width - 1:
-        var rgba = cast[ptr ColorRGBA](unfiltered[i * 3].unsafeAddr)[]
-        rgba.a = 255
-        if rgba == special:
-          rgba.a = 0
-        result[i] = rgba
+        copyMem(result[i].addr, unfiltered[i * 3].unsafeAddr, 4)
+        result[i].a = 255
+        if result[i] == special:
+          result[i].a = 0
     else:
       # While we can read an extra byte safely, do so. Much faster.
       for i in 0 ..< header.height * header.width - 1:
-        var rgba = cast[ptr ColorRGBA](unfiltered[i * 3].unsafeAddr)[]
-        rgba.a = 255
-        result[i] = rgba
+        copyMem(result[i].addr, unfiltered[i * 3].unsafeAddr, 4)
+        result[i].a = 255
 
-    let
-      lastOffset = header.height * header.width - 1
-      rgb = cast[ptr array[3, uint8]](unfiltered[lastOffset * 3].unsafeAddr)[]
-    var rgba = ColorRGBA(r: rgb[0], g: rgb[1], b: rgb[2], a: 255)
+    let lastOffset = header.height * header.width - 1
+    var rgba = rgba(
+      unfiltered[lastOffset * 3 + 0].uint8,
+      unfiltered[lastOffset * 3 + 1].uint8,
+      unfiltered[lastOffset * 3 + 2].uint8,
+      255
+    )
     if rgba == special:
       rgba.a = 0
-    result[header.height * header.width - 1] = cast[ColorRGBA](rgba)
+    result[header.height * header.width - 1] = rgba
   of 3:
     var bytePos, bitPos: int
     for y in 0 ..< header.height:
@@ -290,12 +340,10 @@ proc decodeImageData(
           rgb = palette[value]
           transparency =
             if transparency.len > value.int:
-              transparency[value]
+              transparency.readUint8(value.int)
             else:
               255
-        result[x + y * header.width] = ColorRGBA(
-          r: rgb.r, g: rgb.g, b: rgb.b, a: transparency
-        )
+        result[x + y * header.width] = rgba(rgb.r, rgb.g, rgb.b, transparency)
 
       # If we move to a new row, skip to the next full byte
       if bitPos > 0:
@@ -304,23 +352,70 @@ proc decodeImageData(
   of 4:
     for i in 0 ..< header.height * header.width:
       let bytePos = i * 2
-      result[i] = ColorRGBA(
-        r: unfiltered[bytePos],
-        g: unfiltered[bytePos],
-        b: unfiltered[bytePos],
-        a: unfiltered[bytePos + 1]
+      result[i] = rgba(
+        unfiltered[bytePos],
+        unfiltered[bytePos],
+        unfiltered[bytePos],
+        unfiltered[bytePos + 1]
       )
   of 6:
-    for i in 0 ..< header.height * header.width:
-      result[i] = cast[ColorRGBA](unfiltered.readUint32(i * 4))
+    copyMem(result[0].addr, unfiltered[0].unsafeAddr, unfiltered.len)
   else:
     discard # Not possible, parseHeader validates
 
-proc decodePng*(data: seq[uint8]): Image =
-  ## Decodes the PNG data into an Image.
+proc newImage*(png: Png): Image {.raises: [PixieError].} =
+  ## Creates a new Image from the PNG.
+  result = newImage(png.width, png.height)
+  copyMem(result.data[0].addr, png.data[0].addr, png.data.len * 4)
+  result.data.toPremultipliedAlpha()
 
-  if data.len < (8 + (8 + 13 + 4) + 4): # Magic bytes + IHDR + IEND
+proc convertToImage*(png: Png): Image {.raises: [].} =
+  ## Converts a PNG into an Image by moving the data. This is faster but can
+  ## only be done once.
+  type Movable = ref object
+    width, height, channels: int
+    data: seq[ColorRGBX]
+
+  result = Image()
+  result.width = png.width
+  result.height = png.height
+  result.data = move cast[Movable](png).data
+  result.data.toPremultipliedAlpha()
+
+proc decodePngDimensions*(
+  data: pointer, len: int
+): ImageDimensions {.raises: [PixieError].} =
+  ## Decodes the PNG dimensions.
+  if len < (8 + (8 + 13 + 4) + 4): # Magic bytes + IHDR + IEND
     failInvalid()
+
+  let data = cast[ptr UncheckedArray[uint8]](data)
+
+  # PNG file signature
+  let signature = cast[array[8, uint8]](data.readUint64(0))
+  if signature != pngSignature:
+    failInvalid()
+
+  # First chunk must be IHDR
+  if data.readUint32(8).swap() != 13 or data.readStr(12, 4) != "IHDR":
+    failInvalid()
+
+  let header = decodeHeader(data[16].addr)
+  result.width = header.width
+  result.height = header.height
+
+proc decodePngDimensions*(
+  data: string
+): ImageDimensions {.inline, raises: [PixieError].} =
+  ## Decodes the PNG dimensions.
+  decodePngDimensions(data.cstring, data.len)
+
+proc decodePng*(data: pointer, len: int): Png {.raises: [PixieError].} =
+  ## Decodes the PNG data.
+  if len < (8 + (8 + 13 + 4) + 4): # Magic bytes + IHDR + IEND
+    failInvalid()
+
+  let data = cast[ptr UncheckedArray[uint8]](data)
 
   # PNG file signature
   let signature = cast[array[8, uint8]](data.readUint64(0))
@@ -332,7 +427,8 @@ proc decodePng*(data: seq[uint8]): Image =
     counts = ChunkCounts()
     header: PngHeader
     palette: seq[ColorRGB]
-    transparency, imageData: seq[uint8]
+    transparency: string
+    idats: seq[(int, int)]
     prevChunkType: string
 
   # First chunk must be IHDR
@@ -340,16 +436,17 @@ proc decodePng*(data: seq[uint8]): Image =
     data.readStr(pos + 4, 4) != "IHDR":
     failInvalid()
   inc(pos, 8)
-  header = decodeHeader(data[pos ..< pos + 13])
+  header = decodeHeader(data[pos].addr)
   prevChunkType = "IHDR"
   inc(pos, 13)
 
-  # if crc32(data[pos - 17 ..< pos]) != read32be(data, pos):
-  #   failCRC()
+  let headerCrc = crc32(data[pos - 17].addr, 17)
+  if headerCrc != data.readUint32(pos).swap():
+    failCRC()
   inc(pos, 4) # CRC
 
   while true:
-    if pos + 8 > data.len:
+    if pos + 8 > len:
       failInvalid()
 
     let
@@ -360,7 +457,7 @@ proc decodePng*(data: seq[uint8]): Image =
     if chunkLen > high(int32).int:
       failInvalid()
 
-    if pos + chunkLen + 4 > data.len:
+    if pos + chunkLen + 4 > len:
       failInvalid()
 
     case chunkType:
@@ -370,12 +467,12 @@ proc decodePng*(data: seq[uint8]): Image =
       inc counts.PLTE
       if counts.PLTE > 1 or counts.IDAT > 0 or counts.tRNS > 0:
         failInvalid()
-      palette = decodePalette(data[pos ..< pos + chunkLen])
+      palette = decodePalette(data[pos].addr, chunkLen)
     of "tRNS":
       inc counts.tRNS
       if counts.tRNS > 1 or counts.IDAT > 0:
         failInvalid()
-      transparency = data[pos ..< pos + chunkLen]
+      transparency = data.readStr(pos, chunkLen)
       case header.colorType:
       of 0:
         if transparency.len != 2:
@@ -394,48 +491,44 @@ proc decodePng*(data: seq[uint8]): Image =
         failInvalid()
       if header.colorType == 3 and counts.PLTE == 0:
         failInvalid()
-      let op = imageData.len
-      imageData.setLen(imageData.len + chunkLen)
-      copyMem(imageData[op].addr, data[pos].unsafeAddr, chunkLen)
+      idats.add((pos, chunkLen))
     of "IEND":
       if chunkLen != 0:
         failInvalid()
     else:
-      let bytes = cast[seq[uint8]](chunkType)
-      if (bytes[0] and 0b00100000) == 0:
+      if (chunkType.readUint8(0) and 0b00100000) == 0:
         raise newException(
           PixieError, "Unrecognized PNG critical chunk " & chunkType
         )
 
     inc(pos, chunkLen)
 
-    # if crc32(data[pos - chunkLen - 4 ..< pos]) != read32be(data, pos):
-    #   failCRC()
+    let chunkCrc = crc32(data[pos - chunkLen - 4].addr, chunkLen + 4)
+    if chunkCrc != data.readUint32(pos).swap():
+      failCRC()
     inc(pos, 4) # CRC
 
     prevChunkType = chunkType
 
-    if pos == data.len or prevChunkType == "IEND":
+    if pos == len or prevChunkType == "IEND":
       break
 
   if prevChunkType != "IEND":
     failInvalid()
 
-  var pixels = decodeImageData(header, palette, transparency, imageData)
-  pixels.toPremultipliedAlpha()
-
-  result = Image()
+  result = Png()
   result.width = header.width
   result.height = header.height
-  result.data = cast[seq[ColorRGBX]](pixels)
+  result.channels = 4
+  result.data = decodeImageData(data, header, palette, transparency, idats)
 
-proc decodePng*(data: string): Image {.inline.} =
-  ## Decodes the PNG data into an Image.
-  decodePng(cast[seq[uint8]](data))
+proc decodePng*(data: string): Png {.inline, raises: [PixieError].} =
+  ## Decodes the PNG data.
+  decodePng(data.cstring, data.len)
 
 proc encodePng*(
   width, height, channels: int, data: pointer, len: int
-): seq[uint8] =
+): string {.raises: [PixieError].} =
   ## Encodes the image data into the PNG file format.
   ## If data points to RGBA data, it is assumed to be straight alpha.
 
@@ -449,44 +542,45 @@ proc encodePng*(
     raise newException(PixieError, "Invalid PNG data size")
 
   let colorType = case channels:
-    of 1: 0.uint8
-    of 2: 4
-    of 3: 2
-    of 4: 6
+    of 1: 0.char
+    of 2: 4.char
+    of 3: 2.char
+    of 4: 6.char
     else:
       raise newException(PixieError, "Invalid PNG number of channels")
 
   let data = cast[ptr UncheckedArray[uint8]](data)
 
   # Add the PNG file signature
-  result.add(pngSignature)
+  for c in pngSignature:
+    result.add(c.char)
 
   # Add IHDR
   result.addUint32(13.uint32.swap())
-  result.addStr("IHDR")
+  result.add("IHDR")
   result.addUint32(width.uint32.swap())
   result.addUint32(height.uint32.swap())
-  result.add(8.uint8)
-  result.add([colorType, 0, 0, 0])
-  result.addUint32(crc32(result[result.len - 17 ..< result.len]).swap())
+  result.add(8.char)
+  result.add(colorType)
+  result.add(0.char)
+  result.add(0.char)
+  result.add(0.char)
+  result.addUint32(crc32(result[result.len - 17].addr, 17).swap())
 
   # Add IDAT
   # Add room for 1 byte before each row for the filter type.
-  var filtered = newSeq[uint8](width * height * channels + height)
+  var filtered = newString(width * height * channels + height)
   for y in 0 ..< height:
-    filtered[y * width * channels + y] = 3 # Average
+    filtered[y * width * channels + y] = 2.char # Up filter type
     for x in 0 ..< width * channels:
       # Move through the image data byte-by-byte
       let
         dataPos = y * width * channels + x
         filteredPos = y * width * channels + y + 1 + x
-      var left, up: int
-      if x - channels >= 0:
-        left = data[dataPos - channels].int
+      var up: uint8
       if y - 1 >= 0:
-        up = data[(y - 1) * width * channels + x].int
-      let avg = ((left + up) div 2).uint8
-      filtered[filteredPos] = data[dataPos] - avg
+        up = data[(y - 1) * width * channels + x]
+      filtered[filteredPos] = (data[dataPos] - up).char
 
   let compressed =
     try:
@@ -499,18 +593,22 @@ proc encodePng*(
     raise newException(PixieError, "Compressed PNG image data too large")
 
   result.addUint32(compressed.len.uint32.swap())
-  result.add(cast[seq[uint8]]("IDAT"))
+  result.add("IDAT")
   result.add(compressed)
-  result.addUint32(
-    crc32(result[result.len - compressed.len - 4 ..< result.len]).swap()
-  )
+  result.addUint32(crc32(
+    result[result.len - compressed.len - 4].addr,
+    compressed.len + 4
+  ).swap())
 
   # Add IEND
   result.addUint32(0)
-  result.addStr("IEND")
-  result.addUint32(crc32(result[result.len - 4 ..< result.len]).swap())
+  result.add("IEND")
+  result.addUint32(crc32(result[result.len - 4].addr, 4).swap())
 
-proc encodePng*(image: Image): string =
+proc encodePng*(png: Png): string {.raises: [PixieError].} =
+  encodePng(png.width, png.height, 4, png.data[0].addr, png.data.len * 4)
+
+proc encodePng*(image: Image): string {.raises: [PixieError].} =
   ## Encodes the image data into the PNG file format.
   if image.data.len == 0:
     raise newException(
@@ -519,20 +617,16 @@ proc encodePng*(image: Image): string =
     )
   var copy = image.data
   copy.toStraightAlpha()
-  cast[string](encodePng(
-    image.width, image.height, 4, copy[0].addr, copy.len * 4
-  ))
+  encodePng(image.width, image.height, 4, copy[0].addr, copy.len * 4)
 
-proc encodePng*(mask: Mask): string =
+proc encodePng*(mask: Mask): string {.raises: [PixieError].} =
   ## Encodes the mask data into the PNG file format.
   if mask.data.len == 0:
     raise newException(
       PixieError,
       "Mask has no data (are height and width 0?)"
     )
-  cast[string](encodePng(
-    mask.width, mask.height, 1, mask.data[0].addr, mask.data.len
-  ))
+  encodePng(mask.width, mask.height, 1, mask.data[0].addr, mask.data.len)
 
 when defined(release):
   {.pop.}
